@@ -1,0 +1,867 @@
+(*
+ * Z++ Formal Specification: Operations
+ * Now in Android Application
+ * 
+ * This specification formalizes all operations that can be performed on the
+ * Now in Android application state, including read operations, write operations,
+ * and synchronization operations.
+ *)
+
+(* ============================================================================ *)
+(* SECTION 1: Operation Result Types                                           *)
+(* ============================================================================ *)
+
+OperationResult ::= success | error
+
+(*
+ * Schema: Success
+ * 
+ * Represents a successful operation result.
+ *)
+┌ Success ───────────────────────────────────────────────────────────────────┐
+│ result: OperationResult                                                    │
+├────────────────────────────────────────────────────────────────────────────┤
+│ result = success                                                           │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Schema: Error
+ * 
+ * Represents an error result with optional error message.
+ *)
+┌ Error ─────────────────────────────────────────────────────────────────────┐
+│ result: OperationResult                                                    │
+│ message: STRING                                                            │
+├────────────────────────────────────────────────────────────────────────────┤
+│ result = error                                                             │
+│ #message > 0               (* Error message must be non-empty *)           │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 2: User Data Operations                                             *)
+(* ============================================================================ *)
+
+(*
+ * Operation: SetTopicFollowed
+ * 
+ * Sets the followed status for a specific topic.
+ * 
+ * Inputs:
+ *   - topicId: The ID of the topic to follow/unfollow
+ *   - followed: true to follow, false to unfollow
+ * 
+ * Preconditions:
+ *   - Topic must exist in the database
+ * 
+ * Postconditions:
+ *   - If followed=true, topicId is added to followedTopics
+ *   - If followed=false, topicId is removed from followedTopics
+ *   - All other state remains unchanged
+ *)
+┌ SetTopicFollowed ──────────────────────────────────────────────────────────┐
+│ ΔNiaApplicationState                                                       │
+│ topicId?: ID                                                               │
+│ followed?: BOOL                                                            │
+│ result!: OperationResult                                                   │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Preconditions                                                           │
+│ topicId? ∈ {t: database.topics • t.id}                                     │
+│   (* Topic must exist *)                                                   │
+│                                                                            │
+│ -- Postconditions                                                          │
+│ followed? = true ⇒                                                         │
+│   dataStore'.userData.followedTopics =                                     │
+│     dataStore.userData.followedTopics ∪ {topicId?}                         │
+│                                                                            │
+│ followed? = false ⇒                                                        │
+│   dataStore'.userData.followedTopics =                                     │
+│     dataStore.userData.followedTopics \ {topicId?}                         │
+│                                                                            │
+│ -- All other UserData fields unchanged                                     │
+│ dataStore'.userData.bookmarkedNewsResources =                              │
+│   dataStore.userData.bookmarkedNewsResources                               │
+│ dataStore'.userData.viewedNewsResources =                                  │
+│   dataStore.userData.viewedNewsResources                                   │
+│ dataStore'.userData.themeBrand = dataStore.userData.themeBrand             │
+│ dataStore'.userData.darkThemeConfig = dataStore.userData.darkThemeConfig   │
+│ dataStore'.userData.useDynamicColor = dataStore.userData.useDynamicColor   │
+│ dataStore'.userData.shouldHideOnboarding =                                 │
+│   dataStore.userData.shouldHideOnboarding                                  │
+│                                                                            │
+│ -- Database and other state unchanged                                      │
+│ database' = database                                                       │
+│ dataStore'.changeListVersions = dataStore.changeListVersions               │
+│ network' = network                                                         │
+│ syncWork' = syncWork                                                       │
+│                                                                            │
+│ result! = success                                                          │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Operation: SetNewsResourceBookmarked
+ * 
+ * Sets the bookmarked status for a specific news resource.
+ * Automatically marks the resource as viewed when bookmarked.
+ * 
+ * Inputs:
+ *   - newsResourceId: The ID of the news resource to bookmark/unbookmark
+ *   - bookmarked: true to bookmark, false to unbookmark
+ * 
+ * Preconditions:
+ *   - News resource must exist in the database
+ * 
+ * Postconditions:
+ *   - If bookmarked=true, newsResourceId is added to bookmarkedNewsResources
+ *     and viewedNewsResources
+ *   - If bookmarked=false, newsResourceId is removed from bookmarkedNewsResources
+ *     (but remains in viewedNewsResources)
+ *)
+┌ SetNewsResourceBookmarked ─────────────────────────────────────────────────┐
+│ ΔNiaApplicationState                                                       │
+│ newsResourceId?: ID                                                        │
+│ bookmarked?: BOOL                                                          │
+│ result!: OperationResult                                                   │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Preconditions                                                           │
+│ newsResourceId? ∈ {nr: database.newsResources • nr.id}                     │
+│   (* News resource must exist *)                                           │
+│                                                                            │
+│ -- Postconditions                                                          │
+│ bookmarked? = true ⇒                                                       │
+│   dataStore'.userData.bookmarkedNewsResources =                            │
+│     dataStore.userData.bookmarkedNewsResources ∪ {newsResourceId?} ∧       │
+│   dataStore'.userData.viewedNewsResources =                                │
+│     dataStore.userData.viewedNewsResources ∪ {newsResourceId?}             │
+│                                                                            │
+│ bookmarked? = false ⇒                                                      │
+│   dataStore'.userData.bookmarkedNewsResources =                            │
+│     dataStore.userData.bookmarkedNewsResources \ {newsResourceId?} ∧       │
+│   dataStore'.userData.viewedNewsResources =                                │
+│     dataStore.userData.viewedNewsResources                                 │
+│   (* Viewed status persists even when unbookmarking *)                     │
+│                                                                            │
+│ -- All other UserData fields unchanged                                     │
+│ dataStore'.userData.followedTopics = dataStore.userData.followedTopics     │
+│ dataStore'.userData.themeBrand = dataStore.userData.themeBrand             │
+│ dataStore'.userData.darkThemeConfig = dataStore.userData.darkThemeConfig   │
+│ dataStore'.userData.useDynamicColor = dataStore.userData.useDynamicColor   │
+│ dataStore'.userData.shouldHideOnboarding =                                 │
+│   dataStore.userData.shouldHideOnboarding                                  │
+│                                                                            │
+│ -- Database and other state unchanged                                      │
+│ database' = database                                                       │
+│ dataStore'.changeListVersions = dataStore.changeListVersions               │
+│ network' = network                                                         │
+│ syncWork' = syncWork                                                       │
+│                                                                            │
+│ result! = success                                                          │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Operation: SetNewsResourceViewed
+ * 
+ * Marks a news resource as viewed by the user.
+ * 
+ * Inputs:
+ *   - newsResourceId: The ID of the news resource to mark as viewed
+ * 
+ * Preconditions:
+ *   - News resource must exist in the database
+ * 
+ * Postconditions:
+ *   - newsResourceId is added to viewedNewsResources
+ *)
+┌ SetNewsResourceViewed ─────────────────────────────────────────────────────┐
+│ ΔNiaApplicationState                                                       │
+│ newsResourceId?: ID                                                        │
+│ result!: OperationResult                                                   │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Preconditions                                                           │
+│ newsResourceId? ∈ {nr: database.newsResources • nr.id}                     │
+│                                                                            │
+│ -- Postconditions                                                          │
+│ dataStore'.userData.viewedNewsResources =                                  │
+│   dataStore.userData.viewedNewsResources ∪ {newsResourceId?}               │
+│                                                                            │
+│ -- All other UserData fields unchanged                                     │
+│ dataStore'.userData.bookmarkedNewsResources =                              │
+│   dataStore.userData.bookmarkedNewsResources                               │
+│ dataStore'.userData.followedTopics = dataStore.userData.followedTopics     │
+│ dataStore'.userData.themeBrand = dataStore.userData.themeBrand             │
+│ dataStore'.userData.darkThemeConfig = dataStore.userData.darkThemeConfig   │
+│ dataStore'.userData.useDynamicColor = dataStore.userData.useDynamicColor   │
+│ dataStore'.userData.shouldHideOnboarding =                                 │
+│   dataStore.userData.shouldHideOnboarding                                  │
+│                                                                            │
+│ -- Database and other state unchanged                                      │
+│ database' = database                                                       │
+│ dataStore'.changeListVersions = dataStore.changeListVersions               │
+│ network' = network                                                         │
+│ syncWork' = syncWork                                                       │
+│                                                                            │
+│ result! = success                                                          │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Operation: SetThemePreferences
+ * 
+ * Updates user theme preferences.
+ * 
+ * Inputs:
+ *   - themeBrand: The desired theme brand
+ *   - darkThemeConfig: The desired dark theme configuration
+ *   - useDynamicColor: Whether to use dynamic color
+ *)
+┌ SetThemePreferences ───────────────────────────────────────────────────────┐
+│ ΔNiaApplicationState                                                       │
+│ themeBrand?: ThemeBrand                                                    │
+│ darkThemeConfig?: DarkThemeConfig                                          │
+│ useDynamicColor?: BOOL                                                     │
+│ result!: OperationResult                                                   │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Postconditions                                                          │
+│ dataStore'.userData.themeBrand = themeBrand?                               │
+│ dataStore'.userData.darkThemeConfig = darkThemeConfig?                     │
+│ dataStore'.userData.useDynamicColor = useDynamicColor?                     │
+│                                                                            │
+│ -- All other UserData fields unchanged                                     │
+│ dataStore'.userData.bookmarkedNewsResources =                              │
+│   dataStore.userData.bookmarkedNewsResources                               │
+│ dataStore'.userData.viewedNewsResources =                                  │
+│   dataStore.userData.viewedNewsResources                                   │
+│ dataStore'.userData.followedTopics = dataStore.userData.followedTopics     │
+│ dataStore'.userData.shouldHideOnboarding =                                 │
+│   dataStore.userData.shouldHideOnboarding                                  │
+│                                                                            │
+│ -- Database and other state unchanged                                      │
+│ database' = database                                                       │
+│ dataStore'.changeListVersions = dataStore.changeListVersions               │
+│ network' = network                                                         │
+│ syncWork' = syncWork                                                       │
+│                                                                            │
+│ result! = success                                                          │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Operation: CompleteOnboarding
+ * 
+ * Marks the onboarding process as complete.
+ *)
+┌ CompleteOnboarding ────────────────────────────────────────────────────────┐
+│ ΔNiaApplicationState                                                       │
+│ result!: OperationResult                                                   │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Postconditions                                                          │
+│ dataStore'.userData.shouldHideOnboarding = true                            │
+│                                                                            │
+│ -- All other UserData fields unchanged                                     │
+│ dataStore'.userData.bookmarkedNewsResources =                              │
+│   dataStore.userData.bookmarkedNewsResources                               │
+│ dataStore'.userData.viewedNewsResources =                                  │
+│   dataStore.userData.viewedNewsResources                                   │
+│ dataStore'.userData.followedTopics = dataStore.userData.followedTopics     │
+│ dataStore'.userData.themeBrand = dataStore.userData.themeBrand             │
+│ dataStore'.userData.darkThemeConfig = dataStore.userData.darkThemeConfig   │
+│ dataStore'.userData.useDynamicColor = dataStore.userData.useDynamicColor   │
+│                                                                            │
+│ -- Database and other state unchanged                                      │
+│ database' = database                                                       │
+│ dataStore'.changeListVersions = dataStore.changeListVersions               │
+│ network' = network                                                         │
+│ syncWork' = syncWork                                                       │
+│                                                                            │
+│ result! = success                                                          │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 3: Read Operations                                                  *)
+(* ============================================================================ *)
+
+(*
+ * Operation: GetUserNewsResources
+ * 
+ * Retrieves news resources with user-specific state.
+ * 
+ * Inputs:
+ *   - query: Optional query parameters for filtering
+ * 
+ * Outputs:
+ *   - newsResources: List of UserNewsResource matching the query
+ *)
+┌ GetUserNewsResources ──────────────────────────────────────────────────────┐
+│ ΞNiaApplicationState                                                       │
+│ query?: NewsResourceQuery                                                  │
+│ newsResources!: seq UserNewsResource                                       │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Query execution                                                         │
+│ let filteredNews ==                                                        │
+│   ExecuteNewsResourceQuery(database.newsResources, query?)                 │
+│ •                                                                          │
+│   newsResources! = ⟨nr: filteredNews •                                     │
+│     CreateUserNewsResource(nr, dataStore.userData)⟩                        │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Operation: GetFollowableTopics
+ * 
+ * Retrieves all topics with user follow status.
+ * 
+ * Outputs:
+ *   - topics: List of FollowableTopic
+ *)
+┌ GetFollowableTopics ───────────────────────────────────────────────────────┐
+│ ΞNiaApplicationState                                                       │
+│ topics!: seq FollowableTopic                                               │
+├────────────────────────────────────────────────────────────────────────────┤
+│ topics! = ⟨t: database.topics •                                            │
+│   (| topic ↦ t,                                                            │
+│      isFollowed ↦ (t.id ∈ dataStore.userData.followedTopics) |)⟩           │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Operation: GetTopic
+ * 
+ * Retrieves a specific topic by ID.
+ * 
+ * Inputs:
+ *   - topicId: The ID of the topic to retrieve
+ * 
+ * Outputs:
+ *   - topic: The requested topic
+ *   - found: Whether the topic was found
+ *)
+┌ GetTopic ──────────────────────────────────────────────────────────────────┐
+│ ΞNiaApplicationState                                                       │
+│ topicId?: ID                                                               │
+│ topic!: Topic ∪ {null}                                                     │
+│ found!: BOOL                                                               │
+├────────────────────────────────────────────────────────────────────────────┤
+│ topicId? ∈ {t: database.topics • t.id} ⇒                                   │
+│   (∃! t: database.topics • t.id = topicId? ∧ topic! = t) ∧                 │
+│   found! = true                                                            │
+│                                                                            │
+│ topicId? ∉ {t: database.topics • t.id} ⇒                                   │
+│   topic! = null ∧                                                          │
+│   found! = false                                                           │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Operation: SearchContent
+ * 
+ * Performs full-text search across news resources and topics.
+ * 
+ * Inputs:
+ *   - searchQuery: The search query string
+ * 
+ * Outputs:
+ *   - newsResources: News resources matching the search
+ *   - topics: Topics matching the search
+ *)
+┌ SearchContent ─────────────────────────────────────────────────────────────┐
+│ ΞNiaApplicationState                                                       │
+│ searchQuery?: STRING                                                       │
+│ newsResources!: seq UserNewsResource                                       │
+│ topics!: seq FollowableTopic                                               │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Preconditions                                                           │
+│ #searchQuery? > 0          (* Search query must be non-empty *)            │
+│                                                                            │
+│ -- Search news resources                                                   │
+│ let matchingNews ==                                                        │
+│   SearchNewsResources(database.newsResources, searchQuery?)                │
+│ •                                                                          │
+│   newsResources! = ⟨nr: matchingNews •                                     │
+│     CreateUserNewsResource(nr, dataStore.userData)⟩                        │
+│                                                                            │
+│ -- Search topics                                                           │
+│ let matchingTopics == SearchTopics(database.topics, searchQuery?)          │
+│ •                                                                          │
+│   topics! = ⟨t: matchingTopics •                                           │
+│     (| topic ↦ t,                                                          │
+│        isFollowed ↦ (t.id ∈ dataStore.userData.followedTopics) |)⟩         │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Operation: GetRecentSearchQueries
+ * 
+ * Retrieves recent search queries in descending chronological order.
+ * 
+ * Outputs:
+ *   - queries: List of recent search queries (max 10)
+ *)
+┌ GetRecentSearchQueries ────────────────────────────────────────────────────┐
+│ ΞNiaApplicationState                                                       │
+│ queries!: seq RecentSearchQuery                                            │
+├────────────────────────────────────────────────────────────────────────────┤
+│ queries! = database.recentSearchQueries                                    │
+│ #queries! ≤ 10                                                             │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 4: Search History Operations                                        *)
+(* ============================================================================ *)
+
+(*
+ * Operation: InsertRecentSearchQuery
+ * 
+ * Adds a new search query to the recent searches list.
+ * Maintains max 10 entries, removes oldest if necessary.
+ * 
+ * Inputs:
+ *   - query: The search query string
+ *)
+┌ InsertRecentSearchQuery ───────────────────────────────────────────────────┐
+│ ΔNiaApplicationState                                                       │
+│ query?: STRING                                                             │
+│ result!: OperationResult                                                   │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Preconditions                                                           │
+│ #query? > 0                (* Query must be non-empty *)                   │
+│                                                                            │
+│ -- Create new search query entry                                           │
+│ let newQuery ==                                                            │
+│   (| query ↦ query?, queriedDate ↦ currentTime |)                          │
+│ •                                                                          │
+│   -- Remove existing entry for same query if present                       │
+│   let filteredQueries ==                                                   │
+│     ⟨q: ran database.recentSearchQueries | q.query ≠ query?⟩               │
+│   •                                                                        │
+│     -- Prepend new query and keep max 10 entries                           │
+│     #filteredQueries < 10 ⇒                                                │
+│       database'.recentSearchQueries = ⟨newQuery⟩ ⁀ filteredQueries         │
+│     ∧                                                                      │
+│     #filteredQueries ≥ 10 ⇒                                                │
+│       database'.recentSearchQueries =                                      │
+│         ⟨newQuery⟩ ⁀ (filteredQueries ↾ (1..9))                            │
+│                                                                            │
+│ -- All other database state unchanged                                      │
+│ database'.topics = database.topics                                         │
+│ database'.newsResources = database.newsResources                           │
+│ database'.newsTopicCrossRefs = database.newsTopicCrossRefs                 │
+│ database'.topicFtsEntries = database.topicFtsEntries                       │
+│ database'.newsResourceFtsEntries = database.newsResourceFtsEntries         │
+│                                                                            │
+│ -- Other state unchanged                                                   │
+│ dataStore' = dataStore                                                     │
+│ network' = network                                                         │
+│ syncWork' = syncWork                                                       │
+│                                                                            │
+│ result! = success                                                          │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Operation: ClearRecentSearchQueries
+ * 
+ * Clears all recent search queries.
+ *)
+┌ ClearRecentSearchQueries ──────────────────────────────────────────────────┐
+│ ΔNiaApplicationState                                                       │
+│ result!: OperationResult                                                   │
+├────────────────────────────────────────────────────────────────────────────┤
+│ database'.recentSearchQueries = ⟨⟩                                         │
+│                                                                            │
+│ -- All other database state unchanged                                      │
+│ database'.topics = database.topics                                         │
+│ database'.newsResources = database.newsResources                           │
+│ database'.newsTopicCrossRefs = database.newsTopicCrossRefs                 │
+│ database'.topicFtsEntries = database.topicFtsEntries                       │
+│ database'.newsResourceFtsEntries = database.newsResourceFtsEntries         │
+│                                                                            │
+│ -- Other state unchanged                                                   │
+│ dataStore' = dataStore                                                     │
+│ network' = network                                                         │
+│ syncWork' = syncWork                                                       │
+│                                                                            │
+│ result! = success                                                          │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 5: Synchronization Operations                                       *)
+(* ============================================================================ *)
+
+(*
+ * Operation: StartSync
+ * 
+ * Initiates a background synchronization operation.
+ * 
+ * Preconditions:
+ *   - Network must be connected
+ *   - No sync currently in progress
+ * 
+ * Postconditions:
+ *   - Sync status updated to 'syncing'
+ *   - Work status updated to 'running'
+ *   - Last sync attempt time recorded
+ *)
+┌ StartSync ─────────────────────────────────────────────────────────────────┐
+│ ΔNiaApplicationState                                                       │
+│ result!: OperationResult                                                   │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Preconditions                                                           │
+│ network.isConnected = true                                                 │
+│ network.syncStatus = idle                                                  │
+│ syncWork.status ∈ {enqueued, failed}                                       │
+│                                                                            │
+│ -- Update network state                                                    │
+│ network'.isConnected = network.isConnected                                 │
+│ network'.syncStatus = syncing                                              │
+│ network'.lastSyncAttempt = currentTime                                     │
+│ network'.lastSyncSuccess = network.lastSyncSuccess                         │
+│ network'.syncErrorMessage = null                                           │
+│                                                                            │
+│ -- Update sync work state                                                  │
+│ syncWork'.workId = syncWork.workId                                         │
+│ syncWork'.status = running                                                 │
+│ syncWork'.runAttemptCount = syncWork.runAttemptCount + 1                   │
+│ syncWork'.nextScheduledRun = null                                          │
+│ syncWork'.lastRunStartTime = currentTime                                   │
+│ syncWork'.lastRunEndTime = null                                            │
+│                                                                            │
+│ -- Database and datastore unchanged                                        │
+│ database' = database                                                       │
+│ dataStore' = dataStore                                                     │
+│                                                                            │
+│ result! = success                                                          │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Operation: SyncTopics
+ * 
+ * Synchronizes topics from the network to the local database.
+ * 
+ * Inputs:
+ *   - networkTopics: Topics fetched from the API
+ *   - changeListVersion: The version number for this sync
+ * 
+ * Postconditions:
+ *   - Topics are upserted in the database
+ *   - FTS index is updated
+ *   - Change list version is updated
+ *)
+┌ SyncTopics ────────────────────────────────────────────────────────────────┐
+│ ΔNiaApplicationState                                                       │
+│ networkTopics?: seq NetworkTopic                                           │
+│ changeListVersion?: ℤ                                                      │
+│ result!: OperationResult                                                   │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Preconditions                                                           │
+│ network.syncStatus = syncing                                               │
+│ changeListVersion? ≥ dataStore.changeListVersions.topicVersion             │
+│   (* Version must be monotonically increasing *)                           │
+│                                                                            │
+│ -- Transform network topics to entities                                    │
+│ let newTopics == {nt: ran networkTopics? • NetworkTopicToEntity(nt)}       │
+│ •                                                                          │
+│   -- Upsert topics (insert or update)                                      │
+│   database'.topics =                                                       │
+│     (database.topics \ {t: database.topics |                               │
+│        t.id ∈ {nt.id | nt: ran networkTopics?}}) ∪ newTopics               │
+│                                                                            │
+│   -- Update FTS index                                                      │
+│   ∧ database'.topicFtsEntries =                                            │
+│       {t: database'.topics •                                               │
+│         (| topicId ↦ t.id,                                                 │
+│            name ↦ t.name,                                                  │
+│            shortDescription ↦ t.shortDescription,                          │
+│            longDescription ↦ t.longDescription |)}                         │
+│                                                                            │
+│ -- Update change list version                                              │
+│ dataStore'.changeListVersions.topicVersion = changeListVersion?            │
+│ dataStore'.changeListVersions.newsResourceVersion =                        │
+│   dataStore.changeListVersions.newsResourceVersion                         │
+│                                                                            │
+│ -- Clean up user data references to deleted topics                         │
+│ dataStore'.userData.followedTopics =                                       │
+│   dataStore.userData.followedTopics ∩ {t: database'.topics • t.id}         │
+│                                                                            │
+│ -- All other database state unchanged                                      │
+│ database'.newsResources = database.newsResources                           │
+│ database'.newsTopicCrossRefs = database.newsTopicCrossRefs                 │
+│ database'.newsResourceFtsEntries = database.newsResourceFtsEntries         │
+│ database'.recentSearchQueries = database.recentSearchQueries               │
+│                                                                            │
+│ -- All other user data unchanged                                           │
+│ dataStore'.userData.bookmarkedNewsResources =                              │
+│   dataStore.userData.bookmarkedNewsResources                               │
+│ dataStore'.userData.viewedNewsResources =                                  │
+│   dataStore.userData.viewedNewsResources                                   │
+│ dataStore'.userData.themeBrand = dataStore.userData.themeBrand             │
+│ dataStore'.userData.darkThemeConfig = dataStore.userData.darkThemeConfig   │
+│ dataStore'.userData.useDynamicColor = dataStore.userData.useDynamicColor   │
+│ dataStore'.userData.shouldHideOnboarding =                                 │
+│   dataStore.userData.shouldHideOnboarding                                  │
+│                                                                            │
+│ -- Network state unchanged                                                 │
+│ network' = network                                                         │
+│ syncWork' = syncWork                                                       │
+│                                                                            │
+│ result! = success                                                          │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Operation: SyncNewsResources
+ * 
+ * Synchronizes news resources from the network to the local database.
+ * 
+ * Inputs:
+ *   - networkNewsResources: News resources fetched from the API
+ *   - changeListVersion: The version number for this sync
+ * 
+ * Postconditions:
+ *   - News resources are upserted in the database
+ *   - Cross-reference table is updated
+ *   - FTS index is updated
+ *   - Change list version is updated
+ *)
+┌ SyncNewsResources ─────────────────────────────────────────────────────────┐
+│ ΔNiaApplicationState                                                       │
+│ networkNewsResources?: seq NetworkNewsResource                             │
+│ changeListVersion?: ℤ                                                      │
+│ result!: OperationResult                                                   │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Preconditions                                                           │
+│ network.syncStatus = syncing                                               │
+│ changeListVersion? ≥                                                       │
+│   dataStore.changeListVersions.newsResourceVersion                         │
+│                                                                            │
+│ -- Transform network news resources to entities                            │
+│ let resolveTopics == λ topicIds: seq STRING •                              │
+│       ⟨tid: topicIds | tid ∈ {t: database.topics • t.id} •                 │
+│         (THE t: database.topics • t.id = tid)⟩                             │
+│ •                                                                          │
+│ let newNewsResources ==                                                    │
+│   {nnr: ran networkNewsResources? •                                        │
+│      NetworkNewsResourceToEntity(nnr, resolveTopics)}                      │
+│ •                                                                          │
+│   -- Upsert news resources                                                 │
+│   database'.newsResources =                                                │
+│     (database.newsResources \ {nr: database.newsResources |                │
+│        nr.id ∈ {nnr.id | nnr: ran networkNewsResources?}}) ∪               │
+│     newNewsResources                                                       │
+│                                                                            │
+│   -- Update cross-reference table                                          │
+│   ∧ database'.newsTopicCrossRefs =                                         │
+│       {nr: database'.newsResources; topic: ran nr.topics •                 │
+│         (| newsResourceId ↦ nr.id, topicId ↦ topic.id |)}                  │
+│                                                                            │
+│   -- Update FTS index                                                      │
+│   ∧ database'.newsResourceFtsEntries =                                     │
+│       {nr: database'.newsResources •                                       │
+│         (| newsResourceId ↦ nr.id,                                         │
+│            title ↦ nr.title,                                               │
+│            content ↦ nr.content |)}                                        │
+│                                                                            │
+│ -- Update change list version                                              │
+│ dataStore'.changeListVersions.newsResourceVersion = changeListVersion?     │
+│ dataStore'.changeListVersions.topicVersion =                               │
+│   dataStore.changeListVersions.topicVersion                                │
+│                                                                            │
+│ -- Clean up user data references to deleted news resources                 │
+│ dataStore'.userData.bookmarkedNewsResources =                              │
+│   dataStore.userData.bookmarkedNewsResources ∩                             │
+│     {nr: database'.newsResources • nr.id}                                  │
+│ dataStore'.userData.viewedNewsResources =                                  │
+│   dataStore.userData.viewedNewsResources ∩                                 │
+│     {nr: database'.newsResources • nr.id}                                  │
+│                                                                            │
+│ -- All other database state unchanged                                      │
+│ database'.topics = database.topics                                         │
+│ database'.topicFtsEntries = database.topicFtsEntries                       │
+│ database'.recentSearchQueries = database.recentSearchQueries               │
+│                                                                            │
+│ -- All other user data unchanged                                           │
+│ dataStore'.userData.followedTopics = dataStore.userData.followedTopics     │
+│ dataStore'.userData.themeBrand = dataStore.userData.themeBrand             │
+│ dataStore'.userData.darkThemeConfig = dataStore.userData.darkThemeConfig   │
+│ dataStore'.userData.useDynamicColor = dataStore.userData.useDynamicColor   │
+│ dataStore'.userData.shouldHideOnboarding =                                 │
+│   dataStore.userData.shouldHideOnboarding                                  │
+│                                                                            │
+│ -- Network state unchanged                                                 │
+│ network' = network                                                         │
+│ syncWork' = syncWork                                                       │
+│                                                                            │
+│ result! = success                                                          │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Operation: CompleteSyncSuccess
+ * 
+ * Marks the synchronization as successfully completed.
+ * 
+ * Postconditions:
+ *   - Sync status updated to 'success'
+ *   - Work status updated to 'succeeded'
+ *   - Last sync success time recorded
+ *   - Next sync scheduled
+ *)
+┌ CompleteSyncSuccess ───────────────────────────────────────────────────────┐
+│ ΔNiaApplicationState                                                       │
+│ result!: OperationResult                                                   │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Preconditions                                                           │
+│ network.syncStatus = syncing                                               │
+│ syncWork.status = running                                                  │
+│                                                                            │
+│ -- Update network state                                                    │
+│ network'.isConnected = network.isConnected                                 │
+│ network'.syncStatus = success                                              │
+│ network'.lastSyncAttempt = network.lastSyncAttempt                         │
+│ network'.lastSyncSuccess = currentTime                                     │
+│ network'.syncErrorMessage = null                                           │
+│                                                                            │
+│ -- Update sync work state                                                  │
+│ syncWork'.workId = syncWork.workId                                         │
+│ syncWork'.status = succeeded                                               │
+│ syncWork'.runAttemptCount = 0      (* Reset attempt count on success *)    │
+│ syncWork'.nextScheduledRun = currentTime + 1 hour  (* Next periodic sync *)│
+│ syncWork'.lastRunStartTime = syncWork.lastRunStartTime                     │
+│ syncWork'.lastRunEndTime = currentTime                                     │
+│                                                                            │
+│ -- Database and datastore unchanged                                        │
+│ database' = database                                                       │
+│ dataStore' = dataStore                                                     │
+│                                                                            │
+│ result! = success                                                          │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Operation: CompleteSyncError
+ * 
+ * Marks the synchronization as failed.
+ * Schedules retry with exponential backoff.
+ * 
+ * Inputs:
+ *   - errorMessage: Description of the error
+ * 
+ * Postconditions:
+ *   - Sync status updated to 'error'
+ *   - Work status updated to 'failed'
+ *   - Error message recorded
+ *   - Retry scheduled with exponential backoff
+ *)
+┌ CompleteSyncError ─────────────────────────────────────────────────────────┐
+│ ΔNiaApplicationState                                                       │
+│ errorMessage?: STRING                                                      │
+│ result!: OperationResult                                                   │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Preconditions                                                           │
+│ network.syncStatus = syncing                                               │
+│ syncWork.status = running                                                  │
+│ #errorMessage? > 0                                                         │
+│                                                                            │
+│ -- Update network state                                                    │
+│ network'.isConnected = network.isConnected                                 │
+│ network'.syncStatus = error                                                │
+│ network'.lastSyncAttempt = network.lastSyncAttempt                         │
+│ network'.lastSyncSuccess = network.lastSyncSuccess                         │
+│ network'.syncErrorMessage = errorMessage?                                  │
+│                                                                            │
+│ -- Calculate exponential backoff delay                                     │
+│ let backoffDelay ==                                                        │
+│   30 seconds × 2^(syncWork.runAttemptCount)                                │
+│   (* 30s, 60s, 120s, 240s, ... *)                                          │
+│ •                                                                          │
+│   -- Update sync work state                                                │
+│   syncWork'.workId = syncWork.workId                                       │
+│   ∧ syncWork'.status = failed                                              │
+│   ∧ syncWork'.runAttemptCount = syncWork.runAttemptCount                   │
+│   ∧ (syncWork.runAttemptCount < 3 ⇒                                        │
+│       syncWork'.nextScheduledRun = currentTime + backoffDelay)             │
+│   ∧ (syncWork.runAttemptCount ≥ 3 ⇒                                        │
+│       syncWork'.nextScheduledRun = null)   (* Give up after 3 attempts *)  │
+│   ∧ syncWork'.lastRunStartTime = syncWork.lastRunStartTime                 │
+│   ∧ syncWork'.lastRunEndTime = currentTime                                 │
+│                                                                            │
+│ -- Database and datastore unchanged                                        │
+│ database' = database                                                       │
+│ dataStore' = dataStore                                                     │
+│                                                                            │
+│ result! = success                                                          │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 6: Network State Operations                                         *)
+(* ============================================================================ *)
+
+(*
+ * Operation: UpdateNetworkStatus
+ * 
+ * Updates the network connectivity status.
+ * 
+ * Inputs:
+ *   - isConnected: Current network connectivity status
+ *)
+┌ UpdateNetworkStatus ───────────────────────────────────────────────────────┐
+│ ΔNiaApplicationState                                                       │
+│ isConnected?: BOOL                                                         │
+│ result!: OperationResult                                                   │
+├────────────────────────────────────────────────────────────────────────────┤
+│ network'.isConnected = isConnected?                                        │
+│                                                                            │
+│ -- If network disconnected during sync, mark as failed                     │
+│ isConnected? = false ∧ network.syncStatus = syncing ⇒                      │
+│   network'.syncStatus = error ∧                                            │
+│   network'.syncErrorMessage = "Network disconnected during sync"           │
+│                                                                            │
+│ -- Otherwise preserve sync status                                          │
+│ ¬(isConnected? = false ∧ network.syncStatus = syncing) ⇒                   │
+│   network'.syncStatus = network.syncStatus ∧                               │
+│   network'.syncErrorMessage = network.syncErrorMessage                     │
+│                                                                            │
+│ -- Other network state unchanged                                           │
+│ network'.lastSyncAttempt = network.lastSyncAttempt                         │
+│ network'.lastSyncSuccess = network.lastSyncSuccess                         │
+│                                                                            │
+│ -- Other state unchanged                                                   │
+│ database' = database                                                       │
+│ dataStore' = dataStore                                                     │
+│ syncWork' = syncWork                                                       │
+│                                                                            │
+│ result! = success                                                          │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* End of Operations Specification                                             *)
+(* ============================================================================ *)
+
+(*
+ * SUMMARY:
+ * 
+ * This Z++ specification formally defines all operations for the Now in Android
+ * application, including:
+ * 
+ * 1. User Data Operations:
+ *    - SetTopicFollowed: Follow/unfollow topics
+ *    - SetNewsResourceBookmarked: Bookmark/unbookmark news
+ *    - SetNewsResourceViewed: Mark news as viewed
+ *    - SetThemePreferences: Update theme settings
+ *    - CompleteOnboarding: Mark onboarding complete
+ * 
+ * 2. Read Operations:
+ *    - GetUserNewsResources: Query news with user state
+ *    - GetFollowableTopics: Get topics with follow status
+ *    - GetTopic: Get specific topic by ID
+ *    - SearchContent: Full-text search across content
+ *    - GetRecentSearchQueries: Get search history
+ * 
+ * 3. Search History Operations:
+ *    - InsertRecentSearchQuery: Add to search history
+ *    - ClearRecentSearchQueries: Clear search history
+ * 
+ * 4. Synchronization Operations:
+ *    - StartSync: Initiate background sync
+ *    - SyncTopics: Sync topics from API
+ *    - SyncNewsResources: Sync news from API
+ *    - CompleteSyncSuccess: Mark sync successful
+ *    - CompleteSyncError: Mark sync failed with retry
+ * 
+ * 5. Network Operations:
+ *    - UpdateNetworkStatus: Track network connectivity
+ * 
+ * All operations specify:
+ * - Preconditions (required state before operation)
+ * - Postconditions (guaranteed state after operation)
+ * - Invariants maintained (referential integrity, consistency)
+ * - Error handling (when applicable)
+ *)
