@@ -1,0 +1,474 @@
+(*
+ * Z++ Formal Specification: System State
+ * Now in Android Application
+ * 
+ * This specification formalizes the complete system state of the Now in Android
+ * application, including all persistent data, runtime state, and system invariants.
+ *)
+
+(* ============================================================================ *)
+(* SECTION 1: Import Data Model                                                *)
+(* ============================================================================ *)
+
+(* Include all schemas from data_model.zpp *)
+(* Assumes: Topic, NewsResource, UserData, NetworkTopic, NetworkNewsResource, etc. *)
+
+(* ============================================================================ *)
+(* SECTION 2: Change List Versioning                                           *)
+(* ============================================================================ *)
+
+(*
+ * Schema: ChangeListVersions
+ * 
+ * Tracks version numbers for incremental synchronization.
+ * Stored in Proto DataStore to persist across app restarts.
+ *)
+┌ ChangeListVersions ────────────────────────────────────────────────────────┐
+│ topicVersion: ℤ                                                            │
+│ newsResourceVersion: ℤ                                                     │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Constraints                                                             │
+│ topicVersion ≥ -1          (* -1 indicates no sync has occurred yet *)     │
+│ newsResourceVersion ≥ -1   (* -1 indicates no sync has occurred yet *)     │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 3: Local Database State                                             *)
+(* ============================================================================ *)
+
+(*
+ * Schema: DatabaseState
+ * 
+ * Represents the complete state of the Room database.
+ * This is the primary persistent storage for the application.
+ *)
+┌ DatabaseState ─────────────────────────────────────────────────────────────┐
+│ topics: ℙ Topic                                                            │
+│ newsResources: ℙ NewsResource                                              │
+│ newsTopicCrossRefs: ℙ NewsResourceTopicCrossRef                            │
+│ topicFtsEntries: ℙ TopicFtsEntity                                          │
+│ newsResourceFtsEntries: ℙ NewsResourceFtsEntity                            │
+│ recentSearchQueries: seq RecentSearchQuery                                 │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Uniqueness Invariants                                                   │
+│ (∀ t₁, t₂: topics • t₁.id = t₂.id ⇒ t₁ = t₂)                              │
+│ (∀ nr₁, nr₂: newsResources • nr₁.id = nr₂.id ⇒ nr₁ = nr₂)                 │
+│                                                                            │
+│ -- Referential Integrity: Cross-References                                 │
+│ (∀ cr: newsTopicCrossRefs •                                                │
+│    (∃ nr: newsResources • nr.id = cr.newsResourceId) ∧                     │
+│    (∃ t: topics • t.id = cr.topicId))                                      │
+│                                                                            │
+│ -- Referential Integrity: NewsResource Topics                              │
+│ (∀ nr: newsResources •                                                     │
+│    (∀ topic: ran nr.topics • topic ∈ topics) ∧                             │
+│    {topic.id | topic: ran nr.topics} =                                     │
+│      {cr.topicId | cr: newsTopicCrossRefs ∧ cr.newsResourceId = nr.id})   │
+│   (* Topics in NewsResource must match cross-references *)                 │
+│                                                                            │
+│ -- FTS Synchronization Invariants                                          │
+│ #topicFtsEntries = #topics                                                 │
+│ (∀ t: topics • ∃! fts: topicFtsEntries • fts.topicId = t.id)               │
+│                                                                            │
+│ #newsResourceFtsEntries = #newsResources                                   │
+│ (∀ nr: newsResources • ∃! fts: newsResourceFtsEntries •                    │
+│    fts.newsResourceId = nr.id)                                             │
+│                                                                            │
+│ -- Recent Search Queries Invariants                                        │
+│ #recentSearchQueries ≤ 10                                                  │
+│ (∀ i, j: dom recentSearchQueries •                                         │
+│    i < j ⇒ recentSearchQueries(i).queriedDate ≥                            │
+│             recentSearchQueries(j).queriedDate)                            │
+│   (* Ordered by date descending, most recent first *)                      │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 4: DataStore State                                                  *)
+(* ============================================================================ *)
+
+(*
+ * Schema: DataStoreState
+ * 
+ * Represents the complete state stored in Proto DataStore.
+ * Includes user preferences and synchronization metadata.
+ *)
+┌ DataStoreState ────────────────────────────────────────────────────────────┐
+│ userData: UserData                                                         │
+│ changeListVersions: ChangeListVersions                                     │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- No additional constraints beyond component schemas                      │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 5: Network State                                                    *)
+(* ============================================================================ *)
+
+NetworkStatus ::= connected | disconnected
+SyncStatus ::= idle | syncing | success | error
+
+(*
+ * Schema: NetworkState
+ * 
+ * Represents the current network connectivity and synchronization status.
+ * This is runtime state, not persisted.
+ *)
+┌ NetworkState ──────────────────────────────────────────────────────────────┐
+│ isConnected: BOOL                                                          │
+│ lastSyncAttempt: INSTANT ∪ {null}                                          │
+│ lastSyncSuccess: INSTANT ∪ {null}                                          │
+│ syncStatus: SyncStatus                                                     │
+│ syncErrorMessage: STRING ∪ {null}                                          │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Constraints                                                             │
+│ lastSyncSuccess ≠ null ⇒ lastSyncAttempt ≠ null                            │
+│   (* Cannot have successful sync without an attempt *)                     │
+│                                                                            │
+│ lastSyncSuccess ≠ null ⇒ lastSyncSuccess ≤ lastSyncAttempt                 │
+│   (* Success time cannot be after attempt time *)                          │
+│                                                                            │
+│ syncStatus = syncing ⇒ isConnected = true                                  │
+│   (* Cannot be syncing without network connection *)                       │
+│                                                                            │
+│ syncStatus = error ⇒ syncErrorMessage ≠ null                               │
+│   (* Error status must have error message *)                               │
+│                                                                            │
+│ syncStatus ≠ error ⇒ syncErrorMessage = null                               │
+│   (* No error message unless in error status *)                            │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 6: WorkManager State                                                *)
+(* ============================================================================ *)
+
+WorkStatus ::= enqueued | running | succeeded | failed | cancelled
+
+(*
+ * Schema: SyncWorkState
+ * 
+ * Represents the state of the background synchronization worker.
+ * Managed by Android WorkManager.
+ *)
+┌ SyncWorkState ─────────────────────────────────────────────────────────────┐
+│ workId: ID                                                                 │
+│ status: WorkStatus                                                         │
+│ runAttemptCount: ℕ                                                         │
+│ nextScheduledRun: INSTANT ∪ {null}                                         │
+│ lastRunStartTime: INSTANT ∪ {null}                                         │
+│ lastRunEndTime: INSTANT ∪ {null}                                           │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Constraints                                                             │
+│ runAttemptCount ≥ 0                                                        │
+│                                                                            │
+│ status = running ⇒ lastRunStartTime ≠ null                                 │
+│   (* Running work must have start time *)                                  │
+│                                                                            │
+│ status ∈ {succeeded, failed} ⇒                                             │
+│   lastRunStartTime ≠ null ∧ lastRunEndTime ≠ null                          │
+│   (* Completed work must have both start and end times *)                  │
+│                                                                            │
+│ lastRunEndTime ≠ null ⇒ lastRunEndTime ≥ lastRunStartTime                  │
+│   (* End time cannot be before start time *)                               │
+│                                                                            │
+│ status = failed ⇒ nextScheduledRun ≠ null                                  │
+│   (* Failed work schedules retry with exponential backoff *)               │
+│                                                                            │
+│ runAttemptCount ≤ 3                                                        │
+│   (* Maximum 3 retry attempts before permanent failure *)                  │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 7: Complete Application State                                       *)
+(* ============================================================================ *)
+
+(*
+ * Schema: NiaApplicationState
+ * 
+ * The complete formal specification of the Now in Android application state.
+ * Combines all sub-states into a single system state model.
+ *)
+┌ NiaApplicationState ───────────────────────────────────────────────────────┐
+│ database: DatabaseState                                                    │
+│ dataStore: DataStoreState                                                  │
+│ network: NetworkState                                                      │
+│ syncWork: SyncWorkState                                                    │
+│ currentTime: INSTANT                                                       │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Cross-Component Referential Integrity                                   │
+│                                                                            │
+│ -- UserData references must point to existing database entities            │
+│ dataStore.userData.bookmarkedNewsResources ⊆                               │
+│   {nr: database.newsResources • nr.id}                                     │
+│                                                                            │
+│ dataStore.userData.viewedNewsResources ⊆                                   │
+│   {nr: database.newsResources • nr.id}                                     │
+│                                                                            │
+│ dataStore.userData.followedTopics ⊆                                        │
+│   {t: database.topics • t.id}                                              │
+│                                                                            │
+│ -- Bookmark Invariant: Bookmarked implies Viewed                           │
+│ dataStore.userData.bookmarkedNewsResources ⊆                               │
+│   dataStore.userData.viewedNewsResources                                   │
+│                                                                            │
+│ -- Temporal Consistency                                                    │
+│ (∀ nr: database.newsResources • nr.publishDate ≤ currentTime)              │
+│   (* News resources cannot be published in the future *)                   │
+│                                                                            │
+│ (∀ q: ran database.recentSearchQueries • q.queriedDate ≤ currentTime)      │
+│   (* Search queries cannot be from the future *)                           │
+│                                                                            │
+│ network.lastSyncAttempt ≠ null ⇒ network.lastSyncAttempt ≤ currentTime     │
+│ network.lastSyncSuccess ≠ null ⇒ network.lastSyncSuccess ≤ currentTime     │
+│                                                                            │
+│ syncWork.lastRunStartTime ≠ null ⇒ syncWork.lastRunStartTime ≤ currentTime │
+│ syncWork.lastRunEndTime ≠ null ⇒ syncWork.lastRunEndTime ≤ currentTime     │
+│ syncWork.nextScheduledRun ≠ null ⇒ syncWork.nextScheduledRun ≥ currentTime │
+│                                                                            │
+│ -- Synchronization Consistency                                             │
+│ network.syncStatus = syncing ⇒ syncWork.status = running                   │
+│   (* Network sync status must match WorkManager status *)                  │
+│                                                                            │
+│ syncWork.status = succeeded ⇒                                              │
+│   network.lastSyncSuccess = syncWork.lastRunEndTime                        │
+│   (* Successful sync updates network state *)                              │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 8: Initial State                                                    *)
+(* ============================================================================ *)
+
+(*
+ * Schema: InitialState
+ * 
+ * Specifies the state of the application on first launch.
+ *)
+┌ InitialState ──────────────────────────────────────────────────────────────┐
+│ NiaApplicationState                                                        │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Database is empty                                                       │
+│ database.topics = ∅                                                        │
+│ database.newsResources = ∅                                                 │
+│ database.newsTopicCrossRefs = ∅                                            │
+│ database.topicFtsEntries = ∅                                               │
+│ database.newsResourceFtsEntries = ∅                                        │
+│ database.recentSearchQueries = ⟨⟩                                          │
+│                                                                            │
+│ -- UserData has default values                                             │
+│ dataStore.userData.bookmarkedNewsResources = ∅                             │
+│ dataStore.userData.viewedNewsResources = ∅                                 │
+│ dataStore.userData.followedTopics = ∅                                      │
+│ dataStore.userData.themeBrand = default                                    │
+│ dataStore.userData.darkThemeConfig = follow_system                         │
+│ dataStore.userData.useDynamicColor = false                                 │
+│ dataStore.userData.shouldHideOnboarding = false                            │
+│                                                                            │
+│ -- No sync has occurred                                                    │
+│ dataStore.changeListVersions.topicVersion = -1                             │
+│ dataStore.changeListVersions.newsResourceVersion = -1                      │
+│                                                                            │
+│ -- Network state unknown initially                                         │
+│ network.lastSyncAttempt = null                                             │
+│ network.lastSyncSuccess = null                                             │
+│ network.syncStatus = idle                                                  │
+│ network.syncErrorMessage = null                                            │
+│                                                                            │
+│ -- Sync work not yet created                                               │
+│ syncWork.status = enqueued                                                 │
+│ syncWork.runAttemptCount = 0                                               │
+│ syncWork.nextScheduledRun ≠ null     (* Scheduled for immediate run *)     │
+│ syncWork.lastRunStartTime = null                                           │
+│ syncWork.lastRunEndTime = null                                             │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 9: State Observations                                               *)
+(* ============================================================================ *)
+
+(*
+ * Schema: ΞNiaApplicationState
+ * 
+ * State observation - the state is read but not modified.
+ * Used for query operations.
+ *)
+┌ ΞNiaApplicationState ──────────────────────────────────────────────────────┐
+│ NiaApplicationState                                                        │
+│ NiaApplicationState'                                                       │
+├────────────────────────────────────────────────────────────────────────────┤
+│ database' = database                                                       │
+│ dataStore' = dataStore                                                     │
+│ network' = network                                                         │
+│ syncWork' = syncWork                                                       │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Schema: ΔNiaApplicationState
+ * 
+ * State change - the state before and after an operation.
+ * Used for mutating operations.
+ *)
+┌ ΔNiaApplicationState ──────────────────────────────────────────────────────┐
+│ NiaApplicationState                                                        │
+│ NiaApplicationState'                                                       │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 10: Derived State Queries                                           *)
+(* ============================================================================ *)
+
+(*
+ * Function: GetAllUserNewsResources
+ * 
+ * Returns all news resources enriched with user state.
+ *)
+GetAllUserNewsResources: NiaApplicationState → seq UserNewsResource
+∀ state: NiaApplicationState •
+  GetAllUserNewsResources(state) =
+    ⟨nr: state.database.newsResources •
+      CreateUserNewsResource(nr, state.dataStore.userData)⟩
+
+(*
+ * Function: GetUserNewsResourcesForFollowedTopics
+ * 
+ * Returns news resources for topics the user follows, with user state.
+ *)
+GetUserNewsResourcesForFollowedTopics: NiaApplicationState → seq UserNewsResource
+∀ state: NiaApplicationState •
+  GetUserNewsResourcesForFollowedTopics(state) =
+    ⟨nr: state.database.newsResources |
+      (∃ topic: ran nr.topics •
+        topic.id ∈ state.dataStore.userData.followedTopics) •
+      CreateUserNewsResource(nr, state.dataStore.userData)⟩
+
+(*
+ * Function: GetBookmarkedNewsResources
+ * 
+ * Returns all bookmarked news resources with user state.
+ *)
+GetBookmarkedNewsResources: NiaApplicationState → seq UserNewsResource
+∀ state: NiaApplicationState •
+  GetBookmarkedNewsResources(state) =
+    ⟨nr: state.database.newsResources |
+      nr.id ∈ state.dataStore.userData.bookmarkedNewsResources •
+      CreateUserNewsResource(nr, state.dataStore.userData)⟩
+
+(*
+ * Function: GetFollowableTopics
+ * 
+ * Returns all topics with user follow status.
+ *)
+GetFollowableTopics: NiaApplicationState → seq FollowableTopic
+∀ state: NiaApplicationState •
+  GetFollowableTopics(state) =
+    ⟨t: state.database.topics •
+      (| topic ↦ t,
+         isFollowed ↦ (t.id ∈ state.dataStore.userData.followedTopics) |)⟩
+
+(*
+ * Function: IsSyncNeeded
+ * 
+ * Determines if synchronization should be triggered.
+ *)
+IsSyncNeeded: NiaApplicationState → BOOL
+∀ state: NiaApplicationState •
+  IsSyncNeeded(state) ⇔
+    state.network.isConnected ∧
+    state.network.syncStatus = idle ∧
+    (state.network.lastSyncSuccess = null ∨
+     state.currentTime - state.network.lastSyncSuccess > 1 hour)
+
+(*
+ * Function: CanRetrySync
+ * 
+ * Determines if a failed sync can be retried.
+ *)
+CanRetrySync: NiaApplicationState → BOOL
+∀ state: NiaApplicationState •
+  CanRetrySync(state) ⇔
+    state.network.isConnected ∧
+    state.syncWork.status = failed ∧
+    state.syncWork.runAttemptCount < 3 ∧
+    state.syncWork.nextScheduledRun ≤ state.currentTime
+
+(* ============================================================================ *)
+(* SECTION 11: State Invariant Properties                                      *)
+(* ============================================================================ *)
+
+(*
+ * Theorem: BookmarkedImpliesViewed
+ * 
+ * Bookmarked news resources are always viewed.
+ *)
+∀ state: NiaApplicationState •
+  state.dataStore.userData.bookmarkedNewsResources ⊆
+  state.dataStore.userData.viewedNewsResources
+
+(*
+ * Theorem: DatabaseTopicsCoverNewsResourceTopics
+ * 
+ * All topics referenced by news resources exist in the topics table.
+ *)
+∀ state: NiaApplicationState •
+  (∀ nr: state.database.newsResources •
+    ∀ topic: ran nr.topics •
+      topic ∈ state.database.topics)
+
+(*
+ * Theorem: FtsInSync
+ * 
+ * Full-text search indices are synchronized with main tables.
+ *)
+∀ state: NiaApplicationState •
+  #state.database.topicFtsEntries = #state.database.topics ∧
+  #state.database.newsResourceFtsEntries = #state.database.newsResources
+
+(*
+ * Theorem: SyncWorkConsistency
+ * 
+ * Sync work state is consistent with network state.
+ *)
+∀ state: NiaApplicationState •
+  state.syncWork.status = running ⇒
+    state.network.syncStatus = syncing ∧
+    state.network.isConnected = true
+
+(*
+ * Theorem: TemporalConsistency
+ * 
+ * All timestamps in the system are consistent with current time.
+ *)
+∀ state: NiaApplicationState •
+  (∀ nr: state.database.newsResources •
+    nr.publishDate ≤ state.currentTime) ∧
+  (state.network.lastSyncSuccess ≠ null ⇒
+    state.network.lastSyncSuccess ≤ state.currentTime) ∧
+  (state.syncWork.nextScheduledRun ≠ null ⇒
+    state.syncWork.nextScheduledRun ≥ state.currentTime ∨
+    state.syncWork.status = running)
+
+(* ============================================================================ *)
+(* End of System State Specification                                           *)
+(* ============================================================================ *)
+
+(*
+ * SUMMARY:
+ * 
+ * This Z++ specification formally defines the complete system state for the
+ * Now in Android application, including:
+ * 
+ * 1. DatabaseState: Room database persistent storage
+ * 2. DataStoreState: Proto DataStore user preferences and metadata
+ * 3. NetworkState: Runtime network connectivity and sync status
+ * 4. SyncWorkState: WorkManager background job state
+ * 5. NiaApplicationState: Complete unified system state
+ * 6. InitialState: First-launch state specification
+ * 7. State observations: ΞNiaApplicationState, ΔNiaApplicationState
+ * 8. Derived queries: GetAllUserNewsResources, GetFollowableTopics, etc.
+ * 9. State invariants: Temporal consistency, referential integrity, sync consistency
+ * 10. Theorems: Formal properties that must hold for all valid states
+ * 
+ * The specification ensures:
+ * - Referential integrity across all data stores
+ * - Temporal consistency of all timestamps
+ * - Synchronization state consistency
+ * - User data consistency (bookmarked ⊆ viewed)
+ * - FTS index synchronization
+ *)
