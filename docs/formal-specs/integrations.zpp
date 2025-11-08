@@ -1,0 +1,768 @@
+(*
+ * Z++ Formal Specification: External Integrations
+ * Now in Android Application
+ * 
+ * This specification formalizes all external API integrations, network protocols,
+ * error handling strategies, and integration contracts for the Now in Android
+ * application.
+ *)
+
+(* ============================================================================ *)
+(* SECTION 1: Network Protocol Specifications                                  *)
+(* ============================================================================ *)
+
+HttpMethod ::= GET | POST | PUT | DELETE
+HttpStatus ::= 
+    ok_200 | created_201 | no_content_204 |
+    bad_request_400 | unauthorized_401 | forbidden_403 | not_found_404 |
+    internal_server_error_500 | service_unavailable_503
+
+ContentType ::= application_json | text_plain
+
+(*
+ * Schema: HttpRequest
+ * 
+ * Represents an HTTP request to the external API.
+ *)
+┌ HttpRequest ───────────────────────────────────────────────────────────────┐
+│ method: HttpMethod                                                         │
+│ url: URL                                                                   │
+│ headers: STRING ↦ STRING                                                   │
+│ queryParams: STRING ↦ STRING                                               │
+│ body: STRING ∪ {null}                                                      │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Constraints                                                             │
+│ method ∈ {POST, PUT} ⇒ body ≠ null                                         │
+│   (* POST and PUT requests must have a body *)                             │
+│                                                                            │
+│ method ∈ {GET, DELETE} ⇒ body = null                                       │
+│   (* GET and DELETE requests must not have a body *)                       │
+│                                                                            │
+│ "Content-Type" ∈ dom headers ⇒                                             │
+│   headers("Content-Type") = "application/json"                             │
+│   (* Now in Android uses JSON for all requests *)                          │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Schema: HttpResponse
+ * 
+ * Represents an HTTP response from the external API.
+ *)
+┌ HttpResponse ──────────────────────────────────────────────────────────────┐
+│ status: HttpStatus                                                         │
+│ headers: STRING ↦ STRING                                                   │
+│ body: STRING ∪ {null}                                                      │
+│ contentType: ContentType                                                   │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Constraints                                                             │
+│ status ∈ {ok_200, created_201} ⇒ body ≠ null                               │
+│   (* Successful responses must have a body *)                              │
+│                                                                            │
+│ status = no_content_204 ⇒ body = null                                      │
+│   (* No content response must not have a body *)                           │
+│                                                                            │
+│ body ≠ null ⇒ contentType = application_json                               │
+│   (* Now in Android expects JSON responses *)                              │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 2: REST API Contract Specifications                                 *)
+(* ============================================================================ *)
+
+(*
+ * Operation: API_GetTopics
+ * 
+ * REST API Endpoint: GET /topics
+ * 
+ * Retrieves all topics or a filtered list based on IDs.
+ * 
+ * Query Parameters:
+ *   - ids: Optional list of topic IDs to retrieve
+ * 
+ * Response: List of NetworkTopic objects
+ *)
+┌ API_GetTopics ─────────────────────────────────────────────────────────────┐
+│ request: HttpRequest                                                       │
+│ response: HttpResponse                                                     │
+│ topics!: seq NetworkTopic                                                  │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Request Specification                                                   │
+│ request.method = GET                                                       │
+│ request.url = baseUrl ⁀ "/topics"                                          │
+│ request.body = null                                                        │
+│                                                                            │
+│ -- Optional ID filtering                                                   │
+│ "ids" ∈ dom request.queryParams ⇒                                          │
+│   ∃ ids: seq ID • request.queryParams("ids") = serializeIds(ids)           │
+│                                                                            │
+│ -- Success Response                                                        │
+│ response.status = ok_200 ⇒                                                 │
+│   ∃ json: STRING •                                                         │
+│     response.body = json ∧                                                 │
+│     topics! = deserializeTopics(json)                                      │
+│                                                                            │
+│ -- Error Response                                                          │
+│ response.status ∉ {ok_200} ⇒ topics! = ⟨⟩                                  │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Operation: API_GetNewsResources
+ * 
+ * REST API Endpoint: GET /newsresources
+ * 
+ * Retrieves all news resources or a filtered list based on IDs.
+ * 
+ * Query Parameters:
+ *   - ids: Optional list of news resource IDs to retrieve
+ * 
+ * Response: List of NetworkNewsResource objects
+ *)
+┌ API_GetNewsResources ──────────────────────────────────────────────────────┐
+│ request: HttpRequest                                                       │
+│ response: HttpResponse                                                     │
+│ newsResources!: seq NetworkNewsResource                                    │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Request Specification                                                   │
+│ request.method = GET                                                       │
+│ request.url = baseUrl ⁀ "/newsresources"                                   │
+│ request.body = null                                                        │
+│                                                                            │
+│ -- Optional ID filtering                                                   │
+│ "ids" ∈ dom request.queryParams ⇒                                          │
+│   ∃ ids: seq ID • request.queryParams("ids") = serializeIds(ids)           │
+│                                                                            │
+│ -- Success Response                                                        │
+│ response.status = ok_200 ⇒                                                 │
+│   ∃ json: STRING •                                                         │
+│     response.body = json ∧                                                 │
+│     newsResources! = deserializeNewsResources(json)                        │
+│                                                                            │
+│ -- Error Response                                                          │
+│ response.status ∉ {ok_200} ⇒ newsResources! = ⟨⟩                           │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Operation: API_GetTopicChangeList
+ * 
+ * REST API Endpoint: GET /changelists/topics
+ * 
+ * Retrieves the change list for topics since a specific version.
+ * Used for incremental synchronization.
+ * 
+ * Query Parameters:
+ *   - after: Optional version number to get changes after
+ * 
+ * Response: List of NetworkChangeList objects
+ *)
+┌ API_GetTopicChangeList ────────────────────────────────────────────────────┐
+│ request: HttpRequest                                                       │
+│ response: HttpResponse                                                     │
+│ changeList!: seq NetworkChangeList                                         │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Request Specification                                                   │
+│ request.method = GET                                                       │
+│ request.url = baseUrl ⁀ "/changelists/topics"                              │
+│ request.body = null                                                        │
+│                                                                            │
+│ -- Optional version filtering                                              │
+│ "after" ∈ dom request.queryParams ⇒                                        │
+│   ∃ version: ℤ •                                                           │
+│     version ≥ -1 ∧                                                         │
+│     request.queryParams("after") = toString(version)                       │
+│                                                                            │
+│ -- Success Response                                                        │
+│ response.status = ok_200 ⇒                                                 │
+│   ∃ json: STRING •                                                         │
+│     response.body = json ∧                                                 │
+│     changeList! = deserializeChangeList(json)                              │
+│                                                                            │
+│ -- Change list ordering invariant                                          │
+│ response.status = ok_200 ⇒                                                 │
+│   (∀ i, j: dom changeList! •                                               │
+│      i < j ⇒ changeList!(i).changeListVersion ≤                            │
+│               changeList!(j).changeListVersion)                            │
+│   (* Changes are ordered by version number *)                              │
+│                                                                            │
+│ -- Error Response                                                          │
+│ response.status ∉ {ok_200} ⇒ changeList! = ⟨⟩                              │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Operation: API_GetNewsResourceChangeList
+ * 
+ * REST API Endpoint: GET /changelists/newsresources
+ * 
+ * Retrieves the change list for news resources since a specific version.
+ * Used for incremental synchronization.
+ * 
+ * Query Parameters:
+ *   - after: Optional version number to get changes after
+ * 
+ * Response: List of NetworkChangeList objects
+ *)
+┌ API_GetNewsResourceChangeList ─────────────────────────────────────────────┐
+│ request: HttpRequest                                                       │
+│ response: HttpResponse                                                     │
+│ changeList!: seq NetworkChangeList                                         │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Request Specification                                                   │
+│ request.method = GET                                                       │
+│ request.url = baseUrl ⁀ "/changelists/newsresources"                       │
+│ request.body = null                                                        │
+│                                                                            │
+│ -- Optional version filtering                                              │
+│ "after" ∈ dom request.queryParams ⇒                                        │
+│   ∃ version: ℤ •                                                           │
+│     version ≥ -1 ∧                                                         │
+│     request.queryParams("after") = toString(version)                       │
+│                                                                            │
+│ -- Success Response                                                        │
+│ response.status = ok_200 ⇒                                                 │
+│   ∃ json: STRING •                                                         │
+│     response.body = json ∧                                                 │
+│     changeList! = deserializeChangeList(json)                              │
+│                                                                            │
+│ -- Change list ordering invariant                                          │
+│ response.status = ok_200 ⇒                                                 │
+│   (∀ i, j: dom changeList! •                                               │
+│      i < j ⇒ changeList!(i).changeListVersion ≤                            │
+│               changeList!(j).changeListVersion)                            │
+│                                                                            │
+│ -- Error Response                                                          │
+│ response.status ∉ {ok_200} ⇒ changeList! = ⟨⟩                              │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 3: Error Handling & Retry Logic                                     *)
+(* ============================================================================ *)
+
+NetworkErrorType ::= 
+    timeout | connection_refused | no_network | 
+    dns_failure | ssl_error | unknown_host |
+    http_client_error | http_server_error
+
+(*
+ * Schema: NetworkError
+ * 
+ * Represents a network error that occurred during an API call.
+ *)
+┌ NetworkError ──────────────────────────────────────────────────────────────┐
+│ errorType: NetworkErrorType                                                │
+│ message: STRING                                                            │
+│ httpStatus: HttpStatus ∪ {null}                                            │
+│ timestamp: INSTANT                                                         │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Constraints                                                             │
+│ errorType ∈ {http_client_error, http_server_error} ⇒ httpStatus ≠ null    │
+│   (* HTTP errors must include status code *)                               │
+│                                                                            │
+│ errorType ∉ {http_client_error, http_server_error} ⇒ httpStatus = null    │
+│   (* Non-HTTP errors have no status code *)                                │
+│                                                                            │
+│ #message > 0               (* Error message must be non-empty *)           │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Function: IsRetryableError
+ * 
+ * Determines if a network error is retryable.
+ * 
+ * Retryable errors:
+ *   - Timeouts
+ *   - Connection issues
+ *   - Server errors (5xx)
+ * 
+ * Non-retryable errors:
+ *   - Client errors (4xx) except 408 (timeout)
+ *   - Authentication errors
+ *)
+IsRetryableError: NetworkError → BOOL
+∀ error: NetworkError •
+  IsRetryableError(error) ⇔
+    error.errorType ∈ {timeout, connection_refused, no_network, dns_failure} ∨
+    error.errorType = http_server_error ∨
+    (error.errorType = http_client_error ∧
+     error.httpStatus = timeout_408)
+
+(*
+ * Schema: RetryPolicy
+ * 
+ * Defines the retry policy for failed network requests.
+ *)
+┌ RetryPolicy ───────────────────────────────────────────────────────────────┐
+│ maxAttempts: ℕ                                                             │
+│ baseDelay: ℕ                    (* Base delay in seconds *)                │
+│ maxDelay: ℕ                     (* Maximum delay in seconds *)             │
+│ backoffMultiplier: ℕ                                                       │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Constraints                                                             │
+│ maxAttempts > 0                                                            │
+│ baseDelay > 0                                                              │
+│ maxDelay ≥ baseDelay                                                       │
+│ backoffMultiplier ≥ 1                                                      │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Now in Android Retry Policy Configuration
+ *)
+NiaRetryPolicy: RetryPolicy
+NiaRetryPolicy =
+  (| maxAttempts ↦ 3,
+     baseDelay ↦ 30,              (* 30 seconds *)
+     maxDelay ↦ 300,              (* 5 minutes *)
+     backoffMultiplier ↦ 2 |)     (* Exponential backoff *)
+
+(*
+ * Function: CalculateRetryDelay
+ * 
+ * Calculates the delay before the next retry attempt using exponential backoff.
+ * 
+ * Formula: min(baseDelay × backoffMultiplier^attemptNumber, maxDelay)
+ *)
+CalculateRetryDelay: RetryPolicy × ℕ → ℕ
+∀ policy: RetryPolicy; attemptNumber: ℕ •
+  attemptNumber < policy.maxAttempts ⇒
+    CalculateRetryDelay(policy, attemptNumber) =
+      min(policy.baseDelay × policy.backoffMultiplier^attemptNumber,
+          policy.maxDelay)
+
+(*
+ * Schema: RetryState
+ * 
+ * Tracks the state of retry attempts for a failed operation.
+ *)
+┌ RetryState ────────────────────────────────────────────────────────────────┐
+│ attemptNumber: ℕ                                                           │
+│ lastError: NetworkError ∪ {null}                                           │
+│ nextRetryTime: INSTANT ∪ {null}                                            │
+│ shouldRetry: BOOL                                                          │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Constraints                                                             │
+│ attemptNumber ≤ NiaRetryPolicy.maxAttempts                                 │
+│                                                                            │
+│ shouldRetry ⇔                                                              │
+│   lastError ≠ null ∧                                                       │
+│   attemptNumber < NiaRetryPolicy.maxAttempts ∧                             │
+│   IsRetryableError(lastError)                                              │
+│                                                                            │
+│ shouldRetry = true ⇒ nextRetryTime ≠ null                                  │
+│ shouldRetry = false ⇒ nextRetryTime = null                                 │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 4: Incremental Synchronization Protocol                             *)
+(* ============================================================================ *)
+
+(*
+ * Operation: IncrementalSyncProtocol
+ * 
+ * Defines the complete incremental synchronization protocol.
+ * 
+ * Protocol Steps:
+ * 1. Fetch change list from API (topics and news resources)
+ * 2. Identify added/modified/deleted items
+ * 3. Fetch full data for added/modified items
+ * 4. Update local database
+ * 5. Update change list version
+ * 
+ * This operation orchestrates the sync process defined in operations.zpp
+ *)
+┌ IncrementalSyncProtocol ───────────────────────────────────────────────────┐
+│ ΔNiaApplicationState                                                       │
+│ result!: OperationResult                                                   │
+│ syncedTopics!: ℕ                                                           │
+│ syncedNewsResources!: ℕ                                                    │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Preconditions                                                           │
+│ network.isConnected = true                                                 │
+│ network.syncStatus = idle                                                  │
+│                                                                            │
+│ -- Step 1: Get current version numbers                                     │
+│ let currentTopicVersion == dataStore.changeListVersions.topicVersion       │
+│ •                                                                          │
+│ let currentNewsVersion ==                                                  │
+│   dataStore.changeListVersions.newsResourceVersion                         │
+│ •                                                                          │
+│   -- Step 2: Fetch topic changes                                           │
+│   ∃ topicChangeListReq: HttpRequest;                                       │
+│     topicChangeListResp: HttpResponse;                                     │
+│     topicChangeList: seq NetworkChangeList •                               │
+│       API_GetTopicChangeList(topicChangeListReq, topicChangeListResp,      │
+│                              topicChangeList) ∧                            │
+│       topicChangeListReq.queryParams("after") =                            │
+│         toString(currentTopicVersion)                                      │
+│   ∧                                                                        │
+│   -- Step 3: Fetch news resource changes                                   │
+│   ∃ newsChangeListReq: HttpRequest;                                        │
+│     newsChangeListResp: HttpResponse;                                      │
+│     newsChangeList: seq NetworkChangeList •                                │
+│       API_GetNewsResourceChangeList(newsChangeListReq,                     │
+│                                     newsChangeListResp,                    │
+│                                     newsChangeList) ∧                      │
+│       newsChangeListReq.queryParams("after") =                             │
+│         toString(currentNewsVersion)                                       │
+│   ∧                                                                        │
+│   -- Step 4: Identify items to fetch                                       │
+│   let topicsToFetch ==                                                     │
+│     {cl: ran topicChangeList | cl.isDelete = false • cl.id}                │
+│   •                                                                        │
+│   let newsToFetch ==                                                       │
+│     {cl: ran newsChangeList | cl.isDelete = false • cl.id}                 │
+│   •                                                                        │
+│     -- Step 5: Fetch full topic data                                       │
+│     ∃ topicsReq: HttpRequest;                                              │
+│       topicsResp: HttpResponse;                                            │
+│       fetchedTopics: seq NetworkTopic •                                    │
+│         #topicsToFetch > 0 ⇒                                               │
+│           (API_GetTopics(topicsReq, topicsResp, fetchedTopics) ∧           │
+│            topicsReq.queryParams("ids") = serializeIds(topicsToFetch))     │
+│     ∧                                                                      │
+│     -- Step 6: Fetch full news resource data                               │
+│     ∃ newsReq: HttpRequest;                                                │
+│       newsResp: HttpResponse;                                              │
+│       fetchedNews: seq NetworkNewsResource •                               │
+│         #newsToFetch > 0 ⇒                                                 │
+│           (API_GetNewsResources(newsReq, newsResp, fetchedNews) ∧          │
+│            newsReq.queryParams("ids") = serializeIds(newsToFetch))         │
+│     ∧                                                                      │
+│     -- Step 7: Update database with synced topics                          │
+│     let latestTopicVersion ==                                              │
+│       max({cl.changeListVersion | cl: ran topicChangeList} ∪               │
+│           {currentTopicVersion})                                           │
+│     •                                                                      │
+│       SyncTopics(fetchedTopics, latestTopicVersion, result!) ∧             │
+│       syncedTopics! = #fetchedTopics                                       │
+│     ∧                                                                      │
+│     -- Step 8: Update database with synced news resources                  │
+│     let latestNewsVersion ==                                               │
+│       max({cl.changeListVersion | cl: ran newsChangeList} ∪                │
+│           {currentNewsVersion})                                            │
+│     •                                                                      │
+│       SyncNewsResources(fetchedNews, latestNewsVersion, result!) ∧         │
+│       syncedNewsResources! = #fetchedNews                                  │
+│     ∧                                                                      │
+│     -- Step 9: Mark sync as successful                                     │
+│     CompleteSyncSuccess(result!)                                           │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 5: Caching & Offline Strategy                                       *)
+(* ============================================================================ *)
+
+(*
+ * Schema: CachePolicy
+ * 
+ * Defines the caching policy for API responses.
+ *)
+┌ CachePolicy ───────────────────────────────────────────────────────────────┐
+│ cacheStrategy: {offline_first, cache_first, network_first, network_only}  │
+│ maxAge: ℕ                      (* Maximum cache age in seconds *)          │
+│ staleWhileRevalidate: BOOL     (* Serve stale data while fetching fresh *) │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Constraints                                                             │
+│ cacheStrategy = offline_first ⇒ maxAge > 0                                 │
+│   (* Offline-first requires cache *)                                       │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Now in Android Cache Policy Configuration
+ *)
+NiaCachePolicy: CachePolicy
+NiaCachePolicy =
+  (| cacheStrategy ↦ offline_first,
+     maxAge ↦ 86400,              (* 24 hours *)
+     staleWhileRevalidate ↦ true |)
+
+(*
+ * Theorem: OfflineFirstGuarantee
+ * 
+ * The offline-first strategy guarantees that:
+ * 1. Local data is always returned immediately if available
+ * 2. Background sync updates local data when network is available
+ * 3. App remains functional without network connectivity
+ *)
+∀ state: NiaApplicationState •
+  -- Data is available from local database
+  #state.database.newsResources > 0 ∨
+  #state.database.topics > 0
+  ⇒
+  -- App can serve data regardless of network status
+  (∀ query: NewsResourceQuery •
+    ∃ results: seq UserNewsResource •
+      GetUserNewsResources(state, query, results))
+
+(* ============================================================================ *)
+(* SECTION 6: Rate Limiting & Throttling                                       *)
+(* ============================================================================ *)
+
+(*
+ * Schema: RateLimitPolicy
+ * 
+ * Defines rate limiting policy to prevent API abuse.
+ *)
+┌ RateLimitPolicy ───────────────────────────────────────────────────────────┐
+│ maxRequestsPerMinute: ℕ                                                    │
+│ maxRequestsPerHour: ℕ                                                      │
+│ burstSize: ℕ               (* Maximum burst of requests *)                 │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Constraints                                                             │
+│ maxRequestsPerMinute ≤ maxRequestsPerHour                                  │
+│ burstSize ≤ maxRequestsPerMinute                                           │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Now in Android Rate Limit Policy
+ * 
+ * Note: The actual backend may have its own rate limits.
+ * These are client-side protective limits.
+ *)
+NiaRateLimitPolicy: RateLimitPolicy
+NiaRateLimitPolicy =
+  (| maxRequestsPerMinute ↦ 60,
+     maxRequestsPerHour ↦ 1000,
+     burstSize ↦ 10 |)
+
+(* ============================================================================ *)
+(* SECTION 7: Data Validation & Sanitization                                   *)
+(* ============================================================================ *)
+
+(*
+ * Function: ValidateNetworkTopic
+ * 
+ * Validates a NetworkTopic received from the API before persisting.
+ *)
+ValidateNetworkTopic: NetworkTopic → BOOL
+∀ nt: NetworkTopic •
+  ValidateNetworkTopic(nt) ⇔
+    nt.id ≠ "" ∧
+    nt.name ≠ "" ∧
+    nt.shortDescription ≠ "" ∧
+    validUrl(nt.url) ∧
+    validUrl(nt.imageUrl)
+  where
+    validUrl: STRING → BOOL  (* URL validation predicate *)
+
+(*
+ * Function: ValidateNetworkNewsResource
+ * 
+ * Validates a NetworkNewsResource received from the API before persisting.
+ *)
+ValidateNetworkNewsResource: NetworkNewsResource → BOOL
+∀ nnr: NetworkNewsResource •
+  ValidateNetworkNewsResource(nnr) ⇔
+    nnr.id ≠ "" ∧
+    nnr.title ≠ "" ∧
+    nnr.content ≠ "" ∧
+    validUrl(nnr.url) ∧
+    (nnr.headerImageUrl = null ∨ validUrl(nnr.headerImageUrl)) ∧
+    validIsoTimestamp(nnr.publishDate) ∧
+    nnr.type ∈ {"article", "video", "podcast", "codelab", "news"} ∧
+    #nnr.topics > 0
+  where
+    validIsoTimestamp: STRING → BOOL  (* ISO-8601 timestamp validation *)
+
+(*
+ * Function: SanitizeHtmlContent
+ * 
+ * Sanitizes HTML content from the API to prevent XSS attacks.
+ * 
+ * Sanitization rules:
+ * - Remove script tags
+ * - Remove event handlers (onclick, onerror, etc.)
+ * - Allow only safe HTML tags (p, a, img, etc.)
+ * - Validate URLs in href and src attributes
+ *)
+SanitizeHtmlContent: STRING → STRING
+∀ content: STRING •
+  let sanitized == SanitizeHtmlContent(content)
+  •
+    -- No script tags
+    ¬contains(sanitized, "<script") ∧
+    -- No event handlers
+    (∀ event: {"onclick", "onerror", "onload", "onmouseover"} •
+      ¬contains(sanitized, event)) ∧
+    -- Only safe tags allowed
+    (∀ tag: extractTags(sanitized) •
+      tag ∈ {"p", "a", "img", "h1", "h2", "h3", "ul", "ol", "li",
+             "strong", "em", "br", "hr"})
+
+(* ============================================================================ *)
+(* SECTION 8: Integration Invariants                                           *)
+(* ============================================================================ *)
+
+(*
+ * Theorem: SyncConsistency
+ * 
+ * After a successful sync, the database contains all non-deleted items
+ * from the API up to the synced version number.
+ *)
+∀ state, state': NiaApplicationState;
+  topicVersion, newsVersion: ℤ •
+  -- Before sync
+  state.dataStore.changeListVersions.topicVersion < topicVersion ∧
+  state.dataStore.changeListVersions.newsResourceVersion < newsVersion ∧
+  -- After successful sync
+  state'.network.syncStatus = success ∧
+  state'.dataStore.changeListVersions.topicVersion = topicVersion ∧
+  state'.dataStore.changeListVersions.newsResourceVersion = newsVersion
+  ⇒
+  -- All non-deleted items up to version are present
+  (∀ cl: NetworkChangeList |
+     cl.changeListVersion ≤ topicVersion ∧
+     cl.isDelete = false •
+     ∃ t: state'.database.topics • t.id = cl.id) ∧
+  (∀ cl: NetworkChangeList |
+     cl.changeListVersion ≤ newsVersion ∧
+     cl.isDelete = false •
+     ∃ nr: state'.database.newsResources • nr.id = cl.id)
+
+(*
+ * Theorem: ReferentialIntegrityPreserved
+ * 
+ * Synchronization preserves referential integrity between news resources
+ * and topics.
+ *)
+∀ state, state': NiaApplicationState •
+  -- After any sync operation
+  state'.network.lastSyncSuccess > state.network.lastSyncSuccess
+  ⇒
+  -- Referential integrity maintained
+  (∀ nr: state'.database.newsResources •
+    ∀ topic: ran nr.topics •
+      topic ∈ state'.database.topics)
+
+(*
+ * Theorem: UserDataConsistency
+ * 
+ * User data references are cleaned up when entities are deleted during sync.
+ *)
+∀ state, state': NiaApplicationState •
+  state'.network.lastSyncSuccess > state.network.lastSyncSuccess
+  ⇒
+  -- Followed topics exist
+  state'.dataStore.userData.followedTopics ⊆
+    {t: state'.database.topics • t.id} ∧
+  -- Bookmarked news exists
+  state'.dataStore.userData.bookmarkedNewsResources ⊆
+    {nr: state'.database.newsResources • nr.id} ∧
+  -- Viewed news exists
+  state'.dataStore.userData.viewedNewsResources ⊆
+    {nr: state'.database.newsResources • nr.id}
+
+(*
+ * Theorem: MonotonicVersioning
+ * 
+ * Change list versions are monotonically increasing.
+ *)
+∀ state, state': NiaApplicationState •
+  state' follows state after successful sync
+  ⇒
+  state'.dataStore.changeListVersions.topicVersion ≥
+    state.dataStore.changeListVersions.topicVersion ∧
+  state'.dataStore.changeListVersions.newsResourceVersion ≥
+    state.dataStore.changeListVersions.newsResourceVersion
+
+(* ============================================================================ *)
+(* SECTION 9: Security Considerations                                          *)
+(* ============================================================================ *)
+
+(*
+ * Schema: SecurityPolicy
+ * 
+ * Defines security requirements for API communication.
+ *)
+┌ SecurityPolicy ────────────────────────────────────────────────────────────┐
+│ requireHttps: BOOL                                                         │
+│ validateCertificates: BOOL                                                 │
+│ allowSelfSignedCerts: BOOL                                                 │
+│ certificatePinning: BOOL                                                   │
+│ sanitizeApiResponses: BOOL                                                 │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Security Constraints                                                    │
+│ requireHttps = true            (* All API calls must use HTTPS *)          │
+│ validateCertificates = true    (* Must validate SSL certificates *)        │
+│ allowSelfSignedCerts = false   (* Do not allow self-signed certs *)        │
+│ certificatePinning = false     (* Certificate pinning not used *)          │
+│ sanitizeApiResponses = true    (* Sanitize all HTML content *)             │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Now in Android Security Policy
+ *)
+NiaSecurityPolicy: SecurityPolicy
+NiaSecurityPolicy =
+  (| requireHttps ↦ true,
+     validateCertificates ↦ true,
+     allowSelfSignedCerts ↦ false,
+     certificatePinning ↦ false,
+     sanitizeApiResponses ↦ true |)
+
+(*
+ * Theorem: SecureTransport
+ * 
+ * All API requests must use HTTPS with valid certificates.
+ *)
+∀ request: HttpRequest •
+  NiaSecurityPolicy.requireHttps = true ⇒
+    request.url starts with "https://" ∧
+    NiaSecurityPolicy.validateCertificates = true
+
+(* ============================================================================ *)
+(* End of External Integrations Specification                                  *)
+(* ============================================================================ *)
+
+(*
+ * SUMMARY:
+ * 
+ * This Z++ specification formally defines all external integrations for the
+ * Now in Android application, including:
+ * 
+ * 1. Network Protocol Specifications:
+ *    - HttpRequest and HttpResponse schemas
+ *    - HTTP methods and status codes
+ *    - Content-Type handling
+ * 
+ * 2. REST API Contract Specifications:
+ *    - GET /topics - Retrieve topics
+ *    - GET /newsresources - Retrieve news resources
+ *    - GET /changelists/topics - Get topic changes
+ *    - GET /changelists/newsresources - Get news changes
+ * 
+ * 3. Error Handling & Retry Logic:
+ *    - NetworkError classification
+ *    - RetryPolicy with exponential backoff
+ *    - Retryable vs non-retryable errors
+ * 
+ * 4. Incremental Synchronization Protocol:
+ *    - Complete sync workflow
+ *    - Change list processing
+ *    - Version management
+ * 
+ * 5. Caching & Offline Strategy:
+ *    - Offline-first cache policy
+ *    - Stale-while-revalidate pattern
+ *    - Cache invalidation rules
+ * 
+ * 6. Rate Limiting & Throttling:
+ *    - Client-side rate limits
+ *    - Burst request handling
+ * 
+ * 7. Data Validation & Sanitization:
+ *    - Input validation for API responses
+ *    - HTML content sanitization
+ *    - URL validation
+ * 
+ * 8. Integration Invariants:
+ *    - Sync consistency guarantees
+ *    - Referential integrity preservation
+ *    - User data consistency
+ *    - Monotonic versioning
+ * 
+ * 9. Security Considerations:
+ *    - HTTPS requirement
+ *    - Certificate validation
+ *    - Response sanitization
+ * 
+ * All integration contracts, error handling, and security policies are
+ * formally specified to ensure reliable and secure external communication.
+ *)

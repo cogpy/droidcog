@@ -1,0 +1,519 @@
+(*
+ * Z++ Formal Specification: Data Model
+ * Now in Android Application
+ * 
+ * This specification formalizes the data layer of the Now in Android application,
+ * including all entities, relationships, constraints, and invariants.
+ *)
+
+(* ============================================================================ *)
+(* SECTION 1: Basic Types and Domains                                          *)
+(* ============================================================================ *)
+
+[ID]
+(* Abstract type representing unique identifiers (UUIDs or strings) *)
+
+[URL]
+(* Abstract type representing valid URLs *)
+
+[INSTANT]
+(* Abstract type representing ISO-8601 timestamps *)
+
+[STRING]
+(* Abstract type representing Unicode text *)
+
+ContentType ::= article | video | podcast | codelab | news
+(* Enumeration of content types for news resources *)
+
+ThemeBrand ::= default | android
+(* Enumeration of available theme brands *)
+
+DarkThemeConfig ::= follow_system | light | dark
+(* Enumeration of dark theme configuration options *)
+
+(* ============================================================================ *)
+(* SECTION 2: Core Entity Schemas                                              *)
+(* ============================================================================ *)
+
+(*
+ * Schema: Topic
+ * 
+ * Represents a topic that users can follow. Topics categorize news resources
+ * and enable personalized content filtering.
+ *
+ * Database: TopicEntity table
+ *)
+┌ Topic ────────────────────────────────────────────────────────────────────┐
+│ id: ID                                                                     │
+│ name: STRING                                                               │
+│ shortDescription: STRING                                                   │
+│ longDescription: STRING                                                    │
+│ url: URL                                                                   │
+│ imageUrl: URL                                                              │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Constraints                                                             │
+│ #name > 0                  (* Topic must have non-empty name *)            │
+│ #shortDescription > 0      (* Short description required *)                │
+│ #longDescription ≥ 0       (* Long description optional but defaults to "" │
+│ #url ≥ 0                   (* URL optional *)                              │
+│ #imageUrl ≥ 0              (* Image URL optional *)                        │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Schema: NewsResource
+ * 
+ * Represents a news resource (article, video, etc.) in the system.
+ * News resources are associated with one or more topics via many-to-many relationship.
+ *
+ * Database: NewsResourceEntity table
+ *)
+┌ NewsResource ──────────────────────────────────────────────────────────────┐
+│ id: ID                                                                     │
+│ title: STRING                                                              │
+│ content: STRING                                                            │
+│ url: URL                                                                   │
+│ headerImageUrl: URL ∪ {null}                                               │
+│ publishDate: INSTANT                                                       │
+│ type: ContentType                                                          │
+│ topics: seq Topic                                                          │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Constraints                                                             │
+│ #title > 0                 (* Must have non-empty title *)                 │
+│ #content > 0               (* Must have non-empty content *)               │
+│ #topics > 0                (* Must be associated with at least one topic *)│
+│ ∀ t: ran topics • t ∈ Topic    (* All topics must be valid Topic entities │
+│ publishDate ≤ now()        (* Publish date cannot be in the future *)     │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Schema: NewsResourceTopicCrossRef
+ * 
+ * Junction table implementing the many-to-many relationship between
+ * NewsResource and Topic entities.
+ *
+ * Database: news_resources_topics table
+ *)
+┌ NewsResourceTopicCrossRef ─────────────────────────────────────────────────┐
+│ newsResourceId: ID                                                         │
+│ topicId: ID                                                                │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Foreign Key Constraints                                                 │
+│ newsResourceId ∈ {nr: NewsResource • nr.id}                                │
+│ topicId ∈ {t: Topic • t.id}                                                │
+│                                                                            │
+│ -- On Delete: CASCADE                                                      │
+│ -- If NewsResource or Topic is deleted, this cross-reference is deleted   │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Schema: UserData
+ * 
+ * Represents user-specific preferences and state. Stored in Proto DataStore
+ * as a single protobuf message per user/device.
+ *
+ * Storage: Proto DataStore (user_preferences.pb)
+ *)
+┌ UserData ──────────────────────────────────────────────────────────────────┐
+│ bookmarkedNewsResources: ℙ ID                                              │
+│ viewedNewsResources: ℙ ID                                                  │
+│ followedTopics: ℙ ID                                                       │
+│ themeBrand: ThemeBrand                                                     │
+│ darkThemeConfig: DarkThemeConfig                                           │
+│ useDynamicColor: BOOL                                                      │
+│ shouldHideOnboarding: BOOL                                                 │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Constraints                                                             │
+│ bookmarkedNewsResources ⊆ {nr: NewsResource • nr.id}                       │
+│   (* Bookmarked resources must exist *)                                    │
+│                                                                            │
+│ viewedNewsResources ⊆ {nr: NewsResource • nr.id}                           │
+│   (* Viewed resources must exist *)                                        │
+│                                                                            │
+│ followedTopics ⊆ {t: Topic • t.id}                                         │
+│   (* Followed topics must exist *)                                         │
+│                                                                            │
+│ bookmarkedNewsResources ⊆ viewedNewsResources                              │
+│   (* Invariant: bookmarked items are always viewed *)                      │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Schema: FollowableTopic
+ * 
+ * Derived entity combining a Topic with user follow status.
+ * This is a view model used in the UI layer, not persisted directly.
+ *)
+┌ FollowableTopic ───────────────────────────────────────────────────────────┐
+│ topic: Topic                                                               │
+│ isFollowed: BOOL                                                           │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Derived from UserData                                                   │
+│ ∃ userData: UserData •                                                     │
+│   isFollowed ⇔ topic.id ∈ userData.followedTopics                          │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Schema: UserNewsResource
+ * 
+ * Derived entity combining a NewsResource with user-specific state
+ * (bookmark status, view status, topic follow status).
+ *
+ * This is computed on-demand by combining NewsResource with UserData.
+ *)
+┌ UserNewsResource ──────────────────────────────────────────────────────────┐
+│ id: ID                                                                     │
+│ title: STRING                                                              │
+│ content: STRING                                                            │
+│ url: URL                                                                   │
+│ headerImageUrl: URL ∪ {null}                                               │
+│ publishDate: INSTANT                                                       │
+│ type: ContentType                                                          │
+│ followableTopics: seq FollowableTopic                                      │
+│ isSaved: BOOL                                                              │
+│ hasBeenViewed: BOOL                                                        │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Construction Invariant                                                  │
+│ ∃ newsResource: NewsResource; userData: UserData •                         │
+│   id = newsResource.id ∧                                                   │
+│   title = newsResource.title ∧                                             │
+│   content = newsResource.content ∧                                         │
+│   url = newsResource.url ∧                                                 │
+│   headerImageUrl = newsResource.headerImageUrl ∧                           │
+│   publishDate = newsResource.publishDate ∧                                 │
+│   type = newsResource.type ∧                                               │
+│   #followableTopics = #newsResource.topics ∧                               │
+│   (∀ i: dom followableTopics •                                             │
+│      followableTopics(i).topic = newsResource.topics(i) ∧                  │
+│      followableTopics(i).isFollowed ⇔                                      │
+│        newsResource.topics(i).id ∈ userData.followedTopics) ∧              │
+│   isSaved ⇔ id ∈ userData.bookmarkedNewsResources ∧                        │
+│   hasBeenViewed ⇔ id ∈ userData.viewedNewsResources                        │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Schema: RecentSearchQuery
+ * 
+ * Represents a recent search query entered by the user.
+ * Stored to provide search history and suggestions.
+ *
+ * Database: RecentSearchQueryEntity table
+ *)
+┌ RecentSearchQuery ─────────────────────────────────────────────────────────┐
+│ query: STRING                                                              │
+│ queriedDate: INSTANT                                                       │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Constraints                                                             │
+│ #query > 0                 (* Query must be non-empty *)                   │
+│ queriedDate ≤ now()        (* Query date cannot be in the future *)       │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 3: Full-Text Search Entities                                        *)
+(* ============================================================================ *)
+
+(*
+ * Schema: NewsResourceFtsEntity
+ * 
+ * Full-Text Search index for NewsResource entities.
+ * Enables efficient content search across title and content fields.
+ *
+ * Database: NewsResourceFtsEntity table (FTS4/FTS5)
+ *)
+┌ NewsResourceFtsEntity ──────────────────────────────────────────────────────┐
+│ newsResourceId: ID                                                         │
+│ title: STRING                                                              │
+│ content: STRING                                                            │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Synchronization Constraint                                              │
+│ ∀ nr: NewsResource •                                                       │
+│   ∃! fts: NewsResourceFtsEntity •                                          │
+│     fts.newsResourceId = nr.id ∧                                           │
+│     fts.title = nr.title ∧                                                 │
+│     fts.content = nr.content                                               │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Schema: TopicFtsEntity
+ * 
+ * Full-Text Search index for Topic entities.
+ * Enables efficient topic search across name and description fields.
+ *
+ * Database: TopicFtsEntity table (FTS4/FTS5)
+ *)
+┌ TopicFtsEntity ────────────────────────────────────────────────────────────┐
+│ topicId: ID                                                                │
+│ name: STRING                                                               │
+│ shortDescription: STRING                                                   │
+│ longDescription: STRING                                                    │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Synchronization Constraint                                              │
+│ ∀ t: Topic •                                                               │
+│   ∃! fts: TopicFtsEntity •                                                 │
+│     fts.topicId = t.id ∧                                                   │
+│     fts.name = t.name ∧                                                    │
+│     fts.shortDescription = t.shortDescription ∧                            │
+│     fts.longDescription = t.longDescription                                │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 4: Network Data Transfer Objects                                    *)
+(* ============================================================================ *)
+
+(*
+ * Schema: NetworkTopic
+ * 
+ * Data transfer object for Topic entities received from the REST API.
+ * Mapped to Topic entity upon storage.
+ *)
+┌ NetworkTopic ──────────────────────────────────────────────────────────────┐
+│ id: STRING                                                                 │
+│ name: STRING                                                               │
+│ shortDescription: STRING                                                   │
+│ longDescription: STRING                                                    │
+│ url: STRING                                                                │
+│ imageUrl: STRING                                                           │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- JSON Deserialization Constraints                                        │
+│ id ≠ ""                    (* ID must be present in JSON *)                │
+│ name ≠ ""                  (* Name must be present in JSON *)              │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Schema: NetworkNewsResource
+ * 
+ * Data transfer object for NewsResource entities received from the REST API.
+ * Mapped to NewsResource entity upon storage.
+ *)
+┌ NetworkNewsResource ───────────────────────────────────────────────────────┐
+│ id: STRING                                                                 │
+│ title: STRING                                                              │
+│ content: STRING                                                            │
+│ url: STRING                                                                │
+│ headerImageUrl: STRING ∪ {null}                                            │
+│ publishDate: STRING        (* ISO-8601 formatted timestamp string *)       │
+│ type: STRING               (* String representation of ContentType *)      │
+│ topics: seq STRING         (* List of topic IDs *)                         │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- JSON Deserialization Constraints                                        │
+│ id ≠ ""                                                                    │
+│ title ≠ ""                                                                 │
+│ content ≠ ""                                                               │
+│ url ≠ ""                                                                   │
+│ #topics > 0                (* Must have at least one topic *)              │
+│ type ∈ {"article", "video", "podcast", "codelab", "news"}                 │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Schema: NetworkChangeList
+ * 
+ * Represents a change list entry returned by the API.
+ * Used for incremental synchronization to detect added/updated/deleted items.
+ *)
+┌ NetworkChangeList ─────────────────────────────────────────────────────────┐
+│ id: STRING                                                                 │
+│ changeListVersion: ℤ                                                       │
+│ isDelete: BOOL                                                             │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Constraints                                                             │
+│ changeListVersion ≥ 0      (* Version must be non-negative *)              │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 5: Data Invariants and Relationships                                *)
+(* ============================================================================ *)
+
+(*
+ * Schema: DataLayerInvariants
+ * 
+ * Global invariants that must hold across the entire data layer.
+ *)
+┌ DataLayerInvariants ───────────────────────────────────────────────────────┐
+│ topics: ℙ Topic                                                            │
+│ newsResources: ℙ NewsResource                                              │
+│ crossRefs: ℙ NewsResourceTopicCrossRef                                     │
+│ userData: UserData                                                         │
+│ recentSearches: seq RecentSearchQuery                                      │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Uniqueness Constraints                                                  │
+│ (∀ t₁, t₂: topics • t₁.id = t₂.id ⇒ t₁ = t₂)                              │
+│   (* Topic IDs are unique *)                                               │
+│                                                                            │
+│ (∀ nr₁, nr₂: newsResources • nr₁.id = nr₂.id ⇒ nr₁ = nr₂)                 │
+│   (* NewsResource IDs are unique *)                                        │
+│                                                                            │
+│ -- Referential Integrity: Cross-References                                 │
+│ (∀ cr: crossRefs •                                                         │
+│    (∃ nr: newsResources • nr.id = cr.newsResourceId) ∧                     │
+│    (∃ t: topics • t.id = cr.topicId))                                      │
+│   (* All cross-references point to existing entities *)                    │
+│                                                                            │
+│ -- Referential Integrity: NewsResource Topics                              │
+│ (∀ nr: newsResources •                                                     │
+│    ∀ topic: ran nr.topics •                                                │
+│      topic ∈ topics)                                                       │
+│   (* All topics referenced by news resources must exist *)                 │
+│                                                                            │
+│ -- Referential Integrity: UserData                                         │
+│ userData.bookmarkedNewsResources ⊆ {nr: newsResources • nr.id}             │
+│ userData.viewedNewsResources ⊆ {nr: newsResources • nr.id}                 │
+│ userData.followedTopics ⊆ {t: topics • t.id}                               │
+│                                                                            │
+│ -- Recent Searches Ordering                                                │
+│ (∀ i, j: dom recentSearches •                                              │
+│    i < j ⇒ recentSearches(i).queriedDate ≥ recentSearches(j).queriedDate) │
+│   (* Recent searches ordered by date descending *)                         │
+│                                                                            │
+│ #recentSearches ≤ 10       (* Limit recent searches to 10 entries *)       │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(* ============================================================================ *)
+(* SECTION 6: Data Transformation Functions                                    *)
+(* ============================================================================ *)
+
+(*
+ * Function: NetworkTopicToEntity
+ * 
+ * Transforms a NetworkTopic DTO to a Topic entity.
+ *)
+NetworkTopicToEntity: NetworkTopic → Topic
+∀ nt: NetworkTopic •
+  NetworkTopicToEntity(nt) = 
+    (| id ↦ nt.id,
+       name ↦ nt.name,
+       shortDescription ↦ nt.shortDescription,
+       longDescription ↦ nt.longDescription,
+       url ↦ nt.url,
+       imageUrl ↦ nt.imageUrl |)
+
+(*
+ * Function: NetworkNewsResourceToEntity
+ * 
+ * Transforms a NetworkNewsResource DTO to a NewsResource entity.
+ * Requires resolution of topic IDs to Topic entities.
+ *)
+NetworkNewsResourceToEntity: NetworkNewsResource × (seq STRING → seq Topic) → NewsResource
+∀ nnr: NetworkNewsResource; resolveTopics: seq STRING → seq Topic •
+  NetworkNewsResourceToEntity(nnr, resolveTopics) =
+    (| id ↦ nnr.id,
+       title ↦ nnr.title,
+       content ↦ nnr.content,
+       url ↦ nnr.url,
+       headerImageUrl ↦ nnr.headerImageUrl,
+       publishDate ↦ parseInstant(nnr.publishDate),
+       type ↦ parseContentType(nnr.type),
+       topics ↦ resolveTopics(nnr.topics) |)
+
+(*
+ * Function: CreateUserNewsResource
+ * 
+ * Combines a NewsResource with UserData to create a UserNewsResource.
+ *)
+CreateUserNewsResource: NewsResource × UserData → UserNewsResource
+∀ nr: NewsResource; ud: UserData •
+  CreateUserNewsResource(nr, ud) =
+    (| id ↦ nr.id,
+       title ↦ nr.title,
+       content ↦ nr.content,
+       url ↦ nr.url,
+       headerImageUrl ↦ nr.headerImageUrl,
+       publishDate ↦ nr.publishDate,
+       type ↦ nr.type,
+       followableTopics ↦ 
+         ⟨∀ i: dom nr.topics • 
+           (| topic ↦ nr.topics(i),
+              isFollowed ↦ (nr.topics(i).id ∈ ud.followedTopics) |)⟩,
+       isSaved ↦ (nr.id ∈ ud.bookmarkedNewsResources),
+       hasBeenViewed ↦ (nr.id ∈ ud.viewedNewsResources) |)
+
+(* ============================================================================ *)
+(* SECTION 7: Query Specifications                                             *)
+(* ============================================================================ *)
+
+(*
+ * Schema: NewsResourceQuery
+ * 
+ * Encapsulates query parameters for filtering news resources.
+ *)
+┌ NewsResourceQuery ─────────────────────────────────────────────────────────┐
+│ filterTopicIds: ℙ ID ∪ {null}                                              │
+│ filterNewsIds: ℙ ID ∪ {null}                                               │
+├────────────────────────────────────────────────────────────────────────────┤
+│ -- Constraints                                                             │
+│ filterTopicIds ≠ null ⇒ filterTopicIds ≠ ∅                                 │
+│   (* If topic filter provided, it must be non-empty *)                     │
+│                                                                            │
+│ filterNewsIds ≠ null ⇒ filterNewsIds ≠ ∅                                   │
+│   (* If news filter provided, it must be non-empty *)                      │
+└────────────────────────────────────────────────────────────────────────────┘
+
+(*
+ * Function: ExecuteNewsResourceQuery
+ * 
+ * Filters news resources based on query parameters.
+ * Returns news resources matching ALL specified criteria.
+ *)
+ExecuteNewsResourceQuery: ℙ NewsResource × NewsResourceQuery → ℙ NewsResource
+∀ allNews: ℙ NewsResource; query: NewsResourceQuery •
+  ExecuteNewsResourceQuery(allNews, query) =
+    {nr: allNews |
+      -- Filter by topic IDs if specified
+      (query.filterTopicIds = null ∨
+       (∃ topic: ran nr.topics • topic.id ∈ query.filterTopicIds)) ∧
+      -- Filter by news IDs if specified
+      (query.filterNewsIds = null ∨
+       nr.id ∈ query.filterNewsIds)
+    }
+
+(*
+ * Function: SearchNewsResources
+ * 
+ * Full-text search across news resource titles and content.
+ * Returns news resources matching the search query.
+ *)
+SearchNewsResources: ℙ NewsResource × STRING → ℙ NewsResource
+∀ allNews: ℙ NewsResource; searchQuery: STRING •
+  SearchNewsResources(allNews, searchQuery) =
+    {nr: allNews |
+      contains(toLowerCase(nr.title), toLowerCase(searchQuery)) ∨
+      contains(toLowerCase(nr.content), toLowerCase(searchQuery))
+    }
+  where
+    contains: STRING × STRING → BOOL  (* substring match predicate *)
+    toLowerCase: STRING → STRING      (* lowercase conversion function *)
+
+(*
+ * Function: SearchTopics
+ * 
+ * Full-text search across topic names and descriptions.
+ * Returns topics matching the search query.
+ *)
+SearchTopics: ℙ Topic × STRING → ℙ Topic
+∀ allTopics: ℙ Topic; searchQuery: STRING •
+  SearchTopics(allTopics, searchQuery) =
+    {t: allTopics |
+      contains(toLowerCase(t.name), toLowerCase(searchQuery)) ∨
+      contains(toLowerCase(t.shortDescription), toLowerCase(searchQuery)) ∨
+      contains(toLowerCase(t.longDescription), toLowerCase(searchQuery))
+    }
+
+(* ============================================================================ *)
+(* End of Data Model Specification                                             *)
+(* ============================================================================ *)
+
+(*
+ * SUMMARY:
+ * 
+ * This Z++ specification formally defines the data model for the Now in Android
+ * application, including:
+ * 
+ * 1. Core entities: Topic, NewsResource, UserData, RecentSearchQuery
+ * 2. Relationship entities: NewsResourceTopicCrossRef
+ * 3. Derived entities: FollowableTopic, UserNewsResource
+ * 4. Full-text search entities: NewsResourceFtsEntity, TopicFtsEntity
+ * 5. Network DTOs: NetworkTopic, NetworkNewsResource, NetworkChangeList
+ * 6. Global invariants: Uniqueness, referential integrity, ordering
+ * 7. Transformation functions: DTO to entity mapping
+ * 8. Query specifications: Filtering and search operations
+ * 
+ * All constraints, relationships, and invariants are formally specified
+ * to provide a rigorous mathematical model of the data layer behavior.
+ *)
